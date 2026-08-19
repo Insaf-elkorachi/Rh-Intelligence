@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SONASID - Suivi candidature</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body class="candidate-page">
+    <main class="candidate-shell">
+      <section class="candidate-card-public">
+        <div class="candidate-logo">
+          <img src="/static/assets/sonasid-logo.png" alt="Sonasid" />
+        </div>
+        <p class="eyebrow">Espace candidat</p>
+        <h1>Suivre ma candidature</h1>
+        <p class="candidate-lead">Consultez uniquement l'etat d'avancement de votre candidature avec votre reference.</p>
+
+        <form id="candidateTrackingForm" class="form candidate-form">
+          <label>Reference candidature
+            <input id="candidateReference" value="APP-1024" placeholder="Ex: APP-1024" required />
+          </label>
+          <label>Email ou telephone
+            <input id="candidateContact" value="salma@email.com" placeholder="Email ou telephone" required />
+          </label>
+          <button class="primary-btn" type="submit">Consulter le statut</button>
+        </form>
+      </section>
+
+      <section class="candidate-status-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Etat actuel</h2>
+            <span>Informations visibles par le candidat</span>
+          </div>
+          <span id="candidateStatusBadge" class="badge review">En revue RH</span>
+        </div>
+        <div id="candidateTrackingResult" class="tracking-result-body"></div>
+      </section>
+    </main>
+
+    <script src="/static/candidate.js"></script>
+  </body>
+</html>

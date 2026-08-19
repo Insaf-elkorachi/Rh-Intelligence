@@ -1,0 +1,35 @@
+﻿services:
+  backend:
+    build: .
+    env_file:
+      - .env
+    environment:
+      MONGODB_URI: mongodb://host.docker.internal:27017
+      QDRANT_URL: http://qdrant:6333
+    ports:
+      - "8000:8000"
+    depends_on:
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./data/uploads:/app/data/uploads
+    networks:
+      - rh-network
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - rh-network
+
+volumes:
+  qdrant_data:
+
+networks:
+  rh-network:
+    driver: bridge
+
+

@@ -1,0 +1,116 @@
+﻿<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SONASID RH Intelligence</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <section id="loginScreen" class="login-screen">
+      <div class="industrial-bg"><span></span><span></span><span></span></div>
+      <div class="login-card">
+        <img class="login-logo" src="/static/assets/sonasid-logo.png" alt="Sonasid" />
+        <p class="kicker">Plateforme interne</p>
+        <h1>Connexion RH</h1>
+        <p class="muted">Accès sécurisé au recrutement intelligent et au pilotage RH du site de Nador.</p>
+        <div class="sonasid-ad"><strong>SONASID Nador</strong><span>Centralisation RH - Analyse CV - Pilotage des effectifs</span></div>
+        <form id="loginForm" class="form login-form">
+          <label>Identifiant<input id="loginUser" value="rh.nador" required /></label>
+          <label>Mot de passe<input id="loginPassword" type="password" value="sonasid2026" required /></label>
+          <p id="loginError" class="login-error is-hidden"></p>
+          <button class="btn primary" type="submit" id="loginSubmitBtn">Se connecter</button>
+          <p class="muted login-hint">Comptes de démonstration : rh.nador / admin.nador / manager.nador — mot de passe sonasid2026</p>
+        </form>
+      </div>
+      <div class="login-preview">
+        <div class="preview-badge">Plateforme SONASID RH</div>
+        <div class="preview-top"><span></span><span></span><span></span></div>
+        <div class="preview-grid">
+          <article><small>Offres ouvertes</small><strong>9</strong></article>
+          <article><small>CV aujourd'hui</small><strong>24</strong></article>
+          <article><small>Score moyen</small><strong>78</strong></article>
+        </div>
+        <div class="preview-bars"><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="preview-footer"><strong>+42%</strong><span>gain estimé sur le tri initial des CV</span></div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="/static/assets/sonasid-logo.png" alt="Sonasid" />
+        <div><strong>RH Intelligence</strong><span>Recrutement interne</span></div>
+      </div>
+      <nav class="nav" aria-label="Navigation">
+        <button class="nav-item active" data-view="dashboard" data-roles="admin,rh,manager"><span class="nav-icon">T</span>Tableau de bord</button>
+        <button class="nav-item" data-view="import-data" data-roles="admin,rh"><span class="nav-icon">I</span>Import annuel</button>
+        <button class="nav-item" data-view="jobs" data-roles="admin,rh,manager"><span class="nav-icon">O</span>Offres</button>
+        <button class="nav-item" data-view="candidates" data-roles="admin,rh,manager"><span class="nav-icon">C</span>Candidats</button>
+        <button class="nav-item" data-view="candidate-detail" data-roles="admin,rh,manager"><span class="nav-icon">F</span>Détail candidat</button>
+        <button class="nav-item" data-view="pipeline" data-roles="admin,rh,manager"><span class="nav-icon">P</span>Candidatures</button>
+        <button class="nav-item" data-view="interviews" data-roles="admin,rh,manager"><span class="nav-icon">E</span>Entretiens</button>
+        <button class="nav-item" data-view="upload" data-roles="admin,rh"><span class="nav-icon">U</span>Dépôt CV</button>
+        <button class="nav-item" data-view="ai" data-roles="admin,rh,manager"><span class="nav-icon">AI</span>Analyse CV</button>
+        <button class="nav-item" data-view="chatbot" data-roles="admin,rh"><span class="nav-icon">B</span>Chatbot RH</button>
+        <button class="nav-item" data-view="reports" data-roles="admin,rh,manager"><span class="nav-icon">R</span>Rapports</button>
+        <button class="nav-item" data-view="notifications" data-roles="admin,rh,manager"><span class="nav-icon">N</span>Notifications</button>
+        <button class="nav-item" data-view="admin" data-roles="admin"><span class="nav-icon">A</span>Administration</button>
+        <button class="nav-item" data-view="logs" data-roles="admin"><span class="nav-icon">L</span>Logs</button>
+      </nav>
+      <div class="user-card">
+        <div class="avatar" id="userAvatar">RH</div>
+        <div><strong id="currentUserName">rh.nador</strong><span id="currentUserRole">Responsable RH</span></div>
+        <button id="logoutBtn" type="button">Déconnexion</button>
+      </div>
+    </aside>
+
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p id="breadcrumb">SONASID Nador / Recrutement</p>
+          <h1 id="pageTitle">Tableau de bord</h1>
+        </div>
+        <div class="topbar-tools">
+          <input id="globalSearch" class="global-search" placeholder="Rechercher offre, candidat, statut..." />
+          <button class="btn ghost" data-action="go-upload" data-roles="admin,rh">Déposer des CV</button>
+          <div class="avatar small" id="topAvatar">RH</div>
+        </div>
+      </header>
+
+      <section id="dashboard" class="view active"></section>
+      <section id="import-data" class="view"></section>
+      <section id="jobs" class="view"></section>
+      <section id="candidates" class="view"></section>
+      <section id="candidate-detail" class="view"></section>
+      <section id="pipeline" class="view"></section>
+      <section id="interviews" class="view"></section>
+      <section id="upload" class="view"></section>
+      <section id="ai" class="view"></section>
+      <section id="chatbot" class="view"></section>
+      <section id="reports" class="view"></section>
+      <section id="notifications" class="view"></section>
+      <section id="admin" class="view"></section>
+      <section id="logs" class="view"></section>
+    </main>
+
+    <div id="toastHost" class="toast-host" aria-live="polite"></div>
+    <div id="modalHost" class="modal-host is-hidden"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="/static/app.js?v=20260723-2"></script>
+  </body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
