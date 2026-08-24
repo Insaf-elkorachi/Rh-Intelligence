@@ -889,8 +889,17 @@ function renderJobs() {
     titleInput.addEventListener("input", () => {
       const box = tagField.querySelector(".tag-input");
       const current = box ? tagBoxSkills(box) : [];
+      const autoSkills = box ? JSON.parse(box.dataset.autoSkills || "[]") : [];
+      const manualSkills = current.filter((skill) => !autoSkills.includes(skill));
+      const defaults = suggestSkillsForTitle(titleInput.value, manualSkills);
+      if (box && titleInput.value.trim()) {
+        const next = [...manualSkills, ...defaults];
+        box.querySelector('input[type="hidden"]').value = next.join(",");
+        box.querySelector(".tag-list").innerHTML = next.map(tagPillHtml).join("");
+        box.dataset.autoSkills = JSON.stringify(defaults);
+      }
       const existingSuggestions = tagField.querySelector(".skill-suggestions");
-      const html = renderSkillSuggestions(titleInput.value, current);
+      const html = renderSkillSuggestions(titleInput.value, box ? tagBoxSkills(box) : current);
       if (existingSuggestions) existingSuggestions.outerHTML = html;
       else if (html) tagField.insertAdjacentHTML("beforeend", html);
     });
