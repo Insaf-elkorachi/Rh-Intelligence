@@ -1260,12 +1260,27 @@ async function exportDashboardPng() {
   if (typeof html2canvas === "undefined") { toast("Le module d'export PNG n'est pas chargé."); return; }
   const dashboard = byId("dashboard");
   if (!dashboard) return;
-  const canvas = await html2canvas(dashboard, { backgroundColor: "#F3F4F6", scale: 2, useCORS: true });
-  const link = document.createElement("a");
-  link.download = `dashboard_rh_${new Date().toISOString().slice(0, 10)}.png`;
-  link.href = canvas.toDataURL("image/png");
-  link.click();
-  toast("Dashboard exporté au format PNG.", "success");
+  try {
+    const source = await html2canvas(dashboard, { backgroundColor: "#F3F4F6", scale: 2, useCORS: true });
+    const size = Math.max(source.width, source.height);
+    const square = document.createElement("canvas");
+    square.width = size;
+    square.height = size;
+    const context = square.getContext("2d");
+    context.fillStyle = "#F3F4F6";
+    context.fillRect(0, 0, size, size);
+    const scale = Math.min(size / source.width, size / source.height);
+    const width = source.width * scale;
+    const height = source.height * scale;
+    context.drawImage(source, (size - width) / 2, (size - height) / 2, width, height);
+    const link = document.createElement("a");
+    link.download = `dashboard_rh_${new Date().toISOString().slice(0, 10)}.png`;
+    link.href = square.toDataURL("image/png");
+    link.click();
+    toast("Dashboard exporté au format PNG carré.", "success");
+  } catch {
+    toast("Impossible de générer l'image PNG du dashboard.");
+  }
 }
 
 function simplePage(id, title, rows) { byId(id).innerHTML = `<section class="panel"><h2>${title}</h2><div class="activity-list">${rows.map((x) => `<div><span></span>${x}</div>`).join("")}</div></section>`; }
