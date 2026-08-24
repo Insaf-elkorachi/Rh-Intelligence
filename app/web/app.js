@@ -78,6 +78,7 @@ const appState = {
   dashboardFilters: { matricule: "", activite: "", dateFrom: "", dateTo: "" },
   deadlineThresholdDays: 90,
   datasetHistory: readDatasetHistory(),
+  interviewScheduleCandidate: null,
 };
 
 // Aucun jeu de KPI de secours: le dashboard doit rester vide tant qu'aucun
@@ -1512,6 +1513,52 @@ function askInterviewSchedule() {
   return { date: date.trim(), time: time.trim() };
 }
 
+function openInterviewScheduleModal(index) {
+  const candidate = candidates[index];
+  if (!candidate) return;
+  appState.interviewScheduleCandidate = index;
+  byId("modalHost").innerHTML = `
+    <div class="modal-backdrop" data-action="close-interview-schedule"></div>
+    <div class="modal-card">
+      <h2>Planifier l'entretien</h2>
+      <p class="muted">${candidate[0]} — ${candidate[1]}</p>
+      <form data-action="interview-schedule-submit">
+        <label>Date de l'entretien<input name="interview-date" type="date" required /></label>
+        <label>Heure de l'entretien<input name="interview-time" type="time" required /></label>
+        <div class="modal-actions">
+          <button class="btn ghost" type="button" data-action="close-interview-schedule">Annuler</button>
+          <button class="btn primary" type="submit">Enregistrer</button>
+        </div>
+      </form>
+    </div>`;
+  byId("modalHost").classList.remove("is-hidden");
+  byId("modalHost").querySelector('input[name="interview-date"]')?.focus();
+}
+
+function closeInterviewScheduleModal() {
+  appState.interviewScheduleCandidate = null;
+  const host = byId("modalHost");
+  host.classList.add("is-hidden");
+  host.innerHTML = "";
+}
+
+function saveInterviewSchedule(form) {
+  const index = appState.interviewScheduleCandidate;
+  const candidate = candidates[index];
+  const data = new FormData(form);
+  const dateValue = data.get("interview-date");
+  const timeValue = data.get("interview-time");
+  if (!candidate || !dateValue || !timeValue) return;
+  const [year, month, day] = dateValue.split("-");
+  interviews.unshift([`INT-${Date.now()}`, candidate[0], candidate[1], `${day}/${month}/${year}`, timeValue, session.user, "planned"]);
+  candidate[5] = "interview";
+  pushActivity(`Entretien planifié pour ${candidate[0]} par ${session.user}`);
+  toast(`Entretien planifié le ${day}/${month}/${year} à ${timeValue}.`, "success");
+  closeInterviewScheduleModal();
+  rerenderKeepView();
+  setView("candidates");
+}
+
 function answerChatLocal(rawMessage) {
   const lowered = normalizeForMatch(rawMessage);
   const s = realDataset?.summary;
@@ -1891,6 +1938,7 @@ byId("globalSearch")?.addEventListener("keydown", (e) => {
 
 document.addEventListener("submit", (e) => {
   if (e.target.matches('[data-action="job-submit"]')) { e.preventDefault(); addJob(e.target); }
+  if (e.target.matches('[data-action="interview-schedule-submit"]')) { e.preventDefault(); saveInterviewSchedule(e.target); }
   if (e.target.matches('[data-action="chat-submit"]')) {
     e.preventDefault();
     submitChat(new FormData(e.target).get("message") || "");
@@ -1973,6 +2021,7 @@ document.addEventListener("click", (e) => {
   if (action === "view-cv") openCandidateCv(Number(actionEl.dataset.index));
   if (action === "edit-skills") openEditSkillsModal(Number(actionEl.dataset.index));
   if (action === "close-edit-skills") closeEditSkillsModal();
+  if (action === "close-interview-schedule") closeInterviewScheduleModal();
   if (action === "save-edit-skills") saveEditSkillsModal(Number(actionEl.dataset.index));
   if (action === "add-suggested-skill") {
     const box = actionEl.closest(".tag-field, .modal-card")?.querySelector(".tag-input");
@@ -1998,13 +2047,11 @@ document.addEventListener("click", (e) => {
   }
   if (action === "candidate-status") {
     const c = candidates[selectedCandidateIndex];
-    let interviewSchedule = null;
     if (actionEl.dataset.status === "interview") {
-      interviewSchedule = askInterviewSchedule();
-      if (!interviewSchedule) return;
+      openInterviewScheduleModal(selectedCandidateIndex);
+      return;
     }
     c[5] = actionEl.dataset.status;
-    if (interviewSchedule) interviews.unshift([`INT-${Date.now()}`, c[0], c[1], interviewSchedule.date, interviewSchedule.time, session.user, "planned"]);
     pushActivity(`${c[0]} -> ${statusLabels[c[5]]}`);
     toast(`Statut mis a jour: ${statusLabels[c[5]]}.`, "success");
     rerenderKeepView();
