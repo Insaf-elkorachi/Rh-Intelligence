@@ -1328,6 +1328,7 @@ async function postCvAnalysis() {
     "http://127.0.0.1:8012/rh/cv/analyze",
   ];
   const errors = [];
+  let authenticationFailed = false;
 
   for (const url of urls) {
     let response;
@@ -1342,8 +1343,9 @@ async function postCvAnalysis() {
       continue;
     }
     if (response.status === 401) {
-      forceReauth("Votre session a expiré pendant l'analyse des CV. Reconnectez-vous puis relancez l'analyse.");
-      throw new Error("SESSION_EXPIRED");
+      authenticationFailed = true;
+      errors.push(`${url} -> 401`);
+      continue;
     }
     let result = {};
     try { result = await response.json(); } catch { result = { detail: response.statusText }; }
@@ -1351,6 +1353,10 @@ async function postCvAnalysis() {
     errors.push(`${url} -> ${response.status} ${result.detail || response.statusText}`);
   }
 
+  if (authenticationFailed) {
+    forceReauth("Votre session a expiré. Reconnectez-vous puis relancez l'analyse des CV.");
+    throw new Error("SESSION_EXPIRED");
+  }
   throw new Error(errors.join(" | "));
 }
 
