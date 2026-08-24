@@ -59,6 +59,7 @@ input:focus, select:focus { outline: 3px solid rgba(240,90,40,.16); border-color
 .kpi-group-item.up { border-top-color: var(--green); background: #F3FBF7; }.kpi-group-item.up .kpi-pct { color: var(--green); }
 .kpi-group-item.info { border-top-color: var(--blue); background: #F5F8FF; }.kpi-group-item.info .kpi-pct { color: var(--blue); }
 .kpi-group-item.warn { border-top-color: var(--amber); background: #FFFAF0; }.kpi-group-item.warn .kpi-pct { color: var(--amber); }
+.kpi-group-item.orange { border-top-color: var(--orange); background: var(--orange-soft); }.kpi-group-item.orange .kpi-pct { color: var(--orange); }
 .kpi-empty { flex: 1; display: flex; align-items: center; justify-content: center; }
 .kpi-empty p { color: var(--muted); font-weight: 700; font-size: 13px; margin: 0; }
 @media (max-width: 1200px) { .kpi-groups-grid { grid-template-columns: 1fr 1fr; } .kpi-groups-grid > .kpi-group:first-child { grid-column: 1 / -1; grid-row: auto; } }

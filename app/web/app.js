@@ -806,7 +806,7 @@ function buildDatasetFromRows(rows, fileName, workbook) {
       { label: "Effectif actif", pct: pct(summary.effectifActif), value: summary.effectifActif, tone: "up" },
       { label: "Effectif total", value: summary.effectifTotal, tone: "info" },
       { label: "Turnover", pct: summary.turnover, value: `${summary.departures} départ(s)`, tone: summary.departures > 0 ? "warn" : "up" },
-      { label: "Licenciements", pct: pct(licenciements), value: licenciements, tone: licenciements > 0 ? "warn" : "up" },
+      { label: "Licenciements", pct: pct(licenciements), value: licenciements, tone: "orange" },
       ...(lastMovement ? [
         { label: "Retraites cumulées", value: lastMovement.retraite, tone: "info" },
         { label: "Démissions cumulées", value: lastMovement.demission, tone: "warn" },
