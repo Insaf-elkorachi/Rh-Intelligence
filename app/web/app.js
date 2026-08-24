@@ -224,7 +224,7 @@ function renderMovementsChart(title, rows) {
   const gridLines = [0, 0.25, 0.5, 0.75, 1].map((f) => `<line x1="${padL}" x2="${w - padR}" y1="${(padT + plotH * (1 - f)).toFixed(1)}" y2="${(padT + plotH * (1 - f)).toFixed(1)}" stroke="#EEF0F3" stroke-width="1" />`).join("");
   const paths = series.map((s) => {
     const points = rows.map((r, i) => `${(padL + i * stepX).toFixed(1)},${scaleY(r[s.key] || 0).toFixed(1)}`).join(" ");
-    return `<polyline points="${points}" fill="none" stroke="${s.color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />`;
+    return `<polyline points="${points}" fill="none" stroke="${s.color}" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" />`;
   }).join("");
   // Points + valeur affichee sur chaque point (comme le modele de reference)
   // + un <title> natif pour le survol (tooltip) sans dependance externe.
