@@ -233,7 +233,7 @@ function renderMovementsChart(title, rows) {
     const cy = scaleY(r[s.key] || 0);
     const dy = sIdx % 2 === 0 ? -8 : 14;
     return `<g class="mv-point">
-      <circle class="mv-dot" cx="${cx}" cy="${cy.toFixed(1)}" r="3.4" fill="${s.color}" data-series="${s.label}" data-month="${r.label}" data-value="${r[s.key] || 0}" data-color="${s.color}"><title>${s.label} — ${r.label} : ${r[s.key] || 0}</title></circle>
+      <circle class="mv-dot" cx="${cx}" cy="${cy.toFixed(1)}" r="2" fill="${s.color}" data-series="${s.label}" data-month="${r.label}" data-value="${r[s.key] || 0}" data-color="${s.color}"><title>${s.label} — ${r.label} : ${r[s.key] || 0}</title></circle>
       <text x="${cx}" y="${(cy + dy).toFixed(1)}" font-size="9.5" font-weight="700" fill="${s.color}" text-anchor="middle">${r[s.key] || 0}</text>
     </g>`;
   }).join("")).join("");

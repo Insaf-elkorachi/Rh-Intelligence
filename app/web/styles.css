@@ -1308,7 +1308,7 @@ button:disabled,
 .movements-panel { min-height: 0 !important; grid-column: 1 / -1; }
 .movements-chart { width: 100%; height: auto; aspect-ratio: 780 / 280; display: block; }
 .mv-dot { cursor: pointer; transition: r 120ms ease; }
-.mv-dot:hover { r: 5.5; }
+.mv-dot:hover { r: 3.5; }
 .movements-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0 0; padding: 0; }
 .movements-legend li { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 800; color: var(--steel); }
 .movements-legend li i { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
