@@ -445,6 +445,10 @@ function renderDashboardFilters() {
   </section>`;
 }
 
+function renderDashboardExportActions() {
+  return `<div class="dashboard-export-actions"><span>Exporter le dashboard</span><button class="btn ghost" type="button" data-action="export-dashboard-xlsx">XLSX</button><button class="btn primary" type="button" data-action="export-dashboard-png">PNG</button></div>`;
+}
+
 // Carte KPI groupee: regroupe plusieurs indicateurs lies (ex: Effectif,
 // Contrats, Genre) dans une seule carte au design uniforme, plutot qu'une
 // carte par indicateur (retour RH). Le pourcentage est desormais l'element
@@ -469,6 +473,7 @@ function renderDashboard() {
   const daysList = realDataset ? realDataset.distributions.contractDeadlineDays : null;
   if (!realDataset) {
     byId("dashboard").innerHTML = `
+      ${renderDashboardExportActions()}
       ${renderDeadlineAlertBanner(null)}
       ${renderDashboardFilters()}
       <div class="dashboard-grid">
@@ -487,6 +492,7 @@ function renderDashboard() {
   }
   const dist = realDataset.distributions;
   byId("dashboard").innerHTML = `
+    ${renderDashboardExportActions()}
     ${renderDeadlineAlertBanner(daysList)}
     ${renderDashboardFilters()}
     <div class="kpi-groups-grid">${realDataset.kpiGroups.map((g) => (g.type === "distribution" ? renderKpiDistributionCard(g.title, g.tag, g.rows) : renderKpiGroup(g))).join("")}</div>
@@ -1228,6 +1234,38 @@ function downloadReport(type) {
   a.download = `${type}_sonasid.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function exportDashboardXlsx() {
+  if (typeof XLSX === "undefined") { toast("La librairie Excel n'est pas chargée."); return; }
+  const summary = realDataset?.summary || {};
+  const rows = [["Indicateur", "Valeur"],
+    ["Effectif actif", summary.effectifActif ?? "N/A"],
+    ["Effectif total", summary.effectifTotal ?? "N/A"],
+    ["Turnover", summary.turnover ?? "N/A"],
+    ["Licenciements", summary.licenciements ?? "N/A"],
+    ["Départs", summary.departures ?? "N/A"],
+    ["Recrutements", summary.recruitments ?? "N/A"],
+    [], ["Mouvements cumulés"], ["Période", "Départs", "Recrutements", "Démissions", "Retraites", "Licenciements"],
+    ...(realDataset?.distributions?.movementsCumulative || []).map((item) => [item.label, item.depart || 0, item.recrutement || 0, item.demission || 0, item.retraite || 0, item.licenciement || 0])];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  sheet["!cols"] = [{ wch: 28 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "Dashboard");
+  XLSX.writeFile(workbook, `dashboard_rh_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  toast("Dashboard exporté au format XLSX.", "success");
+}
+
+async function exportDashboardPng() {
+  if (typeof html2canvas === "undefined") { toast("Le module d'export PNG n'est pas chargé."); return; }
+  const dashboard = byId("dashboard");
+  if (!dashboard) return;
+  const canvas = await html2canvas(dashboard, { backgroundColor: "#F3F4F6", scale: 2, useCORS: true });
+  const link = document.createElement("a");
+  link.download = `dashboard_rh_${new Date().toISOString().slice(0, 10)}.png`;
+  link.href = canvas.toDataURL("image/png");
+  link.click();
+  toast("Dashboard exporté au format PNG.", "success");
 }
 
 function simplePage(id, title, rows) { byId(id).innerHTML = `<section class="panel"><h2>${title}</h2><div class="activity-list">${rows.map((x) => `<div><span></span>${x}</div>`).join("")}</div></section>`; }
@@ -2072,6 +2110,8 @@ document.addEventListener("click", (e) => {
   }
   if (action === "interview-status") { const item = interviews.find((i) => i[0] === actionEl.dataset.id); if (item) item[6] = actionEl.dataset.status; rerenderKeepView(); setView("interviews"); }
   if (action === "download-report") downloadReport(actionEl.dataset.type);
+  if (action === "export-dashboard-xlsx") exportDashboardXlsx();
+  if (action === "export-dashboard-png") exportDashboardPng();
   if (action === "download-dataset") downloadDataset(actionEl.dataset.year);
   if (action === "mark-notifications") { notificationsData.forEach((_, index) => appState.notificationsRead.add(index)); rerenderKeepView(); setView("notifications"); }
   if (action === "chat-prompt") submitChat(actionEl.dataset.prompt || "");
