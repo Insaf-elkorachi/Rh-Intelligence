@@ -11,6 +11,7 @@ let rawImportFileName = null;
 let currentSearch = "";
 let selectedCandidateIndex = 0;
 const DATASET_HISTORY_KEY = "sonasid_rh_dataset_history";
+const DATASET_CACHE_KEY = "sonasid_rh_dataset_cache";
 const importedDatasetFiles = new Map();
 
 function datasetYearFromFileName(fileName) {
@@ -134,6 +135,13 @@ function pushActivity(message) {
 
 async function loadRealDataset() {
   try {
+    const cached = JSON.parse(localStorage.getItem(DATASET_CACHE_KEY) || "null");
+    if (cached?.rows?.length) {
+      rawImportRows = cached.rows;
+      rawImportFileName = cached.fileName;
+      realDataset = buildDatasetFromRows(cached.rows, cached.fileName, null);
+      return;
+    }
     const response = await fetch("/static/data/tdb_nador_09_2025.json", { cache: "no-store" });
     if (!response.ok) throw new Error("Dataset introuvable");
     realDataset = await response.json();
@@ -876,6 +884,11 @@ async function importAnnualExcel(file) {
     rawImportFileName = file.name;
     appState.dashboardFilters = { matricule: "", activite: "", dateFrom: "", dateTo: "" };
     realDataset = buildDatasetFromRows(rows, file.name, workbook);
+    try {
+      localStorage.setItem(DATASET_CACHE_KEY, JSON.stringify({ rows, fileName: file.name }));
+    } catch (storageError) {
+      console.warn("Dataset non sauvegarde localement", storageError);
+    }
     importedDatasetFiles.set(datasetYearFromFileName(file.name), file);
     rememberImportedDataset(file.name, sheetName, rows.length);
     appState.importStatus = { state: "success", message: `${rows.length} lignes analysées depuis "${sheetName}".` };
