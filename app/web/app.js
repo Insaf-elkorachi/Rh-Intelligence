@@ -10,6 +10,26 @@ let rawImportWorkbook = null;
 let rawImportFileName = null;
 let currentSearch = "";
 let selectedCandidateIndex = 0;
+const DATASET_HISTORY_KEY = "sonasid_rh_dataset_history";
+
+function readDatasetHistory() {
+  try {
+    const history = JSON.parse(localStorage.getItem(DATASET_HISTORY_KEY) || "[]");
+    return Array.isArray(history) ? history : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberImportedDataset(fileName, sheetName, rowCount) {
+  const yearMatch = String(fileName || "").match(/\b(20\d{2})\b/);
+  const year = yearMatch ? yearMatch[1] : String(new Date().getFullYear());
+  const history = appState.datasetHistory.filter((item) => item.year !== year);
+  history.push({ year, fileName, sheetName, rowCount, importedAt: new Date().toISOString() });
+  history.sort((a, b) => Number(b.year) - Number(a.year));
+  appState.datasetHistory = history;
+  localStorage.setItem(DATASET_HISTORY_KEY, JSON.stringify(history));
+}
 
 function authHeaders(extra = {}) {
   return session.token ? { ...extra, Authorization: `Bearer ${session.token}` } : extra;
@@ -52,6 +72,7 @@ const appState = {
   chatContext: {},
   dashboardFilters: { matricule: "", activite: "", dateFrom: "", dateTo: "" },
   deadlineThresholdDays: 90,
+  datasetHistory: readDatasetHistory(),
 };
 
 // Aucun jeu de KPI de secours: le dashboard doit rester vide tant qu'aucun
@@ -849,6 +870,7 @@ async function importAnnualExcel(file) {
     rawImportFileName = file.name;
     appState.dashboardFilters = { matricule: "", activite: "", dateFrom: "", dateTo: "" };
     realDataset = buildDatasetFromRows(rows, file.name, workbook);
+    rememberImportedDataset(file.name, sheetName, rows.length);
     appState.importStatus = { state: "success", message: `${rows.length} lignes analysées depuis "${sheetName}".` };
     pushActivity(`Import annuel "${file.name}" traité: dashboard mis à jour`);
     toast("Fichier Excel importé, dashboard mis à jour.", "success");
@@ -1127,7 +1149,7 @@ function renderChatbot() {
   const pendingBanner = appState.chatPending
     ? `<div class="chat-pending"><span>Action en attente de confirmation — répondez "oui" pour valider ou "non" pour annuler.</span></div>`
     : "";
-  byId("chatbot").innerHTML = `<section class="panel chatbot-panel"><h2>Chatbot RH</h2><div class="chat-window">${appState.chat.map(([who, text]) => `<div class="chat ${who}">${String(text).replace(/\n/g, "<br>")}</div>`).join("")}</div>${pendingBanner}<form class="chat-form" data-action="chat-submit"><input name="message" placeholder="Ex: quel est le statut de Salma Bennani ?" autocomplete="off" /><button class="btn primary">Envoyer</button></form><div class="quick-prompts"><button data-action="chat-prompt" data-prompt="Quel est le turnover ?">Turnover</button><button data-action="chat-prompt" data-prompt="Combien d'effectifs actifs ?">Effectif</button><button data-action="chat-prompt" data-prompt="Suivre les candidatures">Candidatures</button><button data-action="chat-prompt" data-prompt="Entretiens prévus">Entretiens</button></div></section>`;
+  byId("chatbot").innerHTML = `<section class="panel chatbot-panel"><h2>Chatbot RH</h2><div class="chat-window">${appState.chat.map(([who, text]) => `<div class="chat ${who}">${String(text).replace(/\n/g, "<br>")}</div>`).join("")}</div>${pendingBanner}<form class="chat-form" data-action="chat-submit"><input name="message" placeholder="Ex: quel est le statut de Salma Bennani ?" autocomplete="off" /><button class="btn primary">Envoyer</button></form><div class="quick-prompts"><button data-action="chat-prompt" data-prompt="Quel est le turnover ?">Quel est le turnover ?</button><button data-action="chat-prompt" data-prompt="Combien d'effectifs actifs ?">Combien d'effectifs actifs ?</button><button data-action="chat-prompt" data-prompt="Affiche la fiche de l'employé RH-0158">Affiche la fiche de l'employé RH-0158</button><button data-action="chat-prompt" data-prompt="Recherche l'employé Mohamed">Recherche l'employé Mohamed</button></div></section>`;
 }
 
 
@@ -1152,7 +1174,10 @@ function saveInterviewFeedback(id) {
 }
 
 function renderReports() {
-  document.getElementById("reports").innerHTML = `<div class="dashboard-grid"><section class="panel"><h2>Rapport recrutement</h2><p class="muted">Synthèse des offres, candidats et scores.</p><button class="btn primary" data-action="download-report" data-type="recruitment">Télécharger CSV</button></section><section class="panel"><h2>Rapport RH TDB</h2><p class="muted">Effectif, turnover, contrats et pyramides.</p><button class="btn primary" data-action="download-report" data-type="tdb">Télécharger CSV</button></section></div>`;
+  const datasets = appState.datasetHistory;
+  const datasetRows = datasets.map((dataset) => `<tr><td><strong>${dataset.year}</strong></td><td>${dataset.fileName}</td><td>${dataset.sheetName}</td><td>${dataset.rowCount}</td><td>${new Date(dataset.importedAt).toLocaleDateString("fr-FR")}</td><td><span class="badge completed">Dernière version</span></td></tr>`).join("");
+  const datasetSection = `<section class="panel wide"><div class="panel-head"><h2>Datasets importés</h2><span>Dernière version par année</span></div>${datasetRows ? `<div class="table-wrap"><table><thead><tr><th>Année</th><th>Fichier</th><th>Feuille</th><th>Lignes</th><th>Importé le</th><th>Version</th></tr></thead><tbody>${datasetRows}</tbody></table></div>` : `<p class="muted">Aucun dataset importé. Importez un fichier Excel annuel pour le retrouver ici.</p>`}</section>`;
+  document.getElementById("reports").innerHTML = `${datasetSection}<div class="dashboard-grid"><section class="panel"><h2>Rapport recrutement</h2><p class="muted">Synthèse des offres, candidats et scores.</p><button class="btn primary" data-action="download-report" data-type="recruitment">Télécharger CSV</button></section><section class="panel"><h2>Rapport RH TDB</h2><p class="muted">Effectif, turnover, contrats et pyramides.</p><button class="btn primary" data-action="download-report" data-type="tdb">Télécharger CSV</button></section></div>`;
 }
 
 function renderNotifications() {
