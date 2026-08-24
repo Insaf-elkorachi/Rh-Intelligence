@@ -319,7 +319,7 @@ class ChatbotService:
             ctx["pending_action"] = pending
             return {"reply": f"Vous etes sur le point de creer un employe avec ces informations: {create_data}. Confirmez-vous cette creation ?", "pending_action": pending, "context": ctx}
 
-        wants_employee = any(word in lowered for word in ("employe", "employÃƒÆ’Ã‚Â©", "salarie", "salariÃƒÆ’Ã‚Â©", "profil", "matricule", "statut", "poste", "departement", "dÃƒÆ’Ã‚Â©partement", "salaire", "email", "telephone", "tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©phone"))
+        wants_employee = any(word in lowered for word in ("employe", "employÃƒÆ’Ã‚Â©", "salarie", "salariÃƒÆ’Ã‚Â©", "profil", "fiche", "matricule", "statut", "poste", "departement", "dÃƒÆ’Ã‚Â©partement", "salaire", "email", "telephone", "tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©phone"))
         update = self._detect_employee_update(clean, None)
         delete = self._detect_employee_delete(clean)
         if wants_employee or update or delete:
