@@ -1258,28 +1258,33 @@ function exportDashboardXlsx() {
 
 async function exportDashboardPng() {
   if (typeof html2canvas === "undefined") { toast("Le module d'export PNG n'est pas chargé."); return; }
-  const dashboard = byId("dashboard");
-  if (!dashboard) return;
+  const summary = realDataset?.summary || {};
+  const movements = realDataset?.distributions?.movementsCumulative || [];
+  const exportHost = document.createElement("div");
+  exportHost.className = "dashboard-png-export";
+  exportHost.innerHTML = `<div class="export-title"><div><small>SONASID NADOR / RH INTELLIGENCE</small><h1>Tableau de bord RH</h1></div><strong>${new Date().toLocaleDateString("fr-FR")}</strong></div>
+    <div class="export-kpis">
+      <article><span>Effectif actif</span><strong>${summary.effectifActif ?? 0}</strong><small>sur ${summary.effectifTotal ?? 0} salariés</small></article>
+      <article><span>Turnover</span><strong>${summary.turnover ?? "0%"}</strong><small>${summary.departures ?? 0} départs</small></article>
+      <article><span>Licenciements</span><strong>${summary.licenciements ?? 0}</strong><small>départs enregistrés</small></article>
+      <article><span>Recrutements</span><strong>${summary.recruitments ?? 0}</strong><small>sur la période</small></article>
+      <article><span>Âge moyen</span><strong>${summary.ageAverage ?? 0} ans</strong><small>population active</small></article>
+    </div>
+    <div class="export-chart">${renderMovementsChart("Mouvements du personnel", movements).replace(/<section class="panel wide movements-panel">|<\/section>/g, "")}</div>
+    <div class="export-footer"><span>Source : ${realDataset?.sourceFile || "Dataset RH importé"}</span><span>Export généré depuis le dashboard RH</span></div>`;
+  Object.assign(exportHost.style, { position: "fixed", left: "-10000px", top: "0", width: "1600px", background: "#F4F6F8", zIndex: "-1" });
+  document.body.appendChild(exportHost);
   try {
-    const source = await html2canvas(dashboard, { backgroundColor: "#F3F4F6", scale: 2, useCORS: true });
-    const size = Math.max(source.width, source.height);
-    const square = document.createElement("canvas");
-    square.width = size;
-    square.height = size;
-    const context = square.getContext("2d");
-    context.fillStyle = "#F3F4F6";
-    context.fillRect(0, 0, size, size);
-    const scale = Math.min(size / source.width, size / source.height);
-    const width = source.width * scale;
-    const height = source.height * scale;
-    context.drawImage(source, (size - width) / 2, (size - height) / 2, width, height);
+    const source = await html2canvas(exportHost, { backgroundColor: "#F4F6F8", scale: 1, useCORS: true });
     const link = document.createElement("a");
     link.download = `dashboard_rh_${new Date().toISOString().slice(0, 10)}.png`;
-    link.href = square.toDataURL("image/png");
+    link.href = source.toDataURL("image/png");
     link.click();
-    toast("Dashboard exporté au format PNG carré.", "success");
+    toast("Dashboard exporté au format PNG paysage.", "success");
   } catch {
     toast("Impossible de générer l'image PNG du dashboard.");
+  } finally {
+    exportHost.remove();
   }
 }
 
