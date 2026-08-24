@@ -11,6 +11,12 @@ let rawImportFileName = null;
 let currentSearch = "";
 let selectedCandidateIndex = 0;
 const DATASET_HISTORY_KEY = "sonasid_rh_dataset_history";
+const importedDatasetFiles = new Map();
+
+function datasetYearFromFileName(fileName) {
+  const yearMatch = String(fileName || "").match(/\b(20\d{2})\b/);
+  return yearMatch ? yearMatch[1] : String(new Date().getFullYear());
+}
 
 function readDatasetHistory() {
   try {
@@ -22,8 +28,7 @@ function readDatasetHistory() {
 }
 
 function rememberImportedDataset(fileName, sheetName, rowCount) {
-  const yearMatch = String(fileName || "").match(/\b(20\d{2})\b/);
-  const year = yearMatch ? yearMatch[1] : String(new Date().getFullYear());
+  const year = datasetYearFromFileName(fileName);
   const history = appState.datasetHistory.filter((item) => item.year !== year);
   history.push({ year, fileName, sheetName, rowCount, importedAt: new Date().toISOString() });
   history.sort((a, b) => Number(b.year) - Number(a.year));
@@ -870,6 +875,7 @@ async function importAnnualExcel(file) {
     rawImportFileName = file.name;
     appState.dashboardFilters = { matricule: "", activite: "", dateFrom: "", dateTo: "" };
     realDataset = buildDatasetFromRows(rows, file.name, workbook);
+    importedDatasetFiles.set(datasetYearFromFileName(file.name), file);
     rememberImportedDataset(file.name, sheetName, rows.length);
     appState.importStatus = { state: "success", message: `${rows.length} lignes analysées depuis "${sheetName}".` };
     pushActivity(`Import annuel "${file.name}" traité: dashboard mis à jour`);
@@ -1175,13 +1181,28 @@ function saveInterviewFeedback(id) {
 
 function renderReports() {
   const datasets = appState.datasetHistory;
-  const datasetRows = datasets.map((dataset) => `<tr><td><strong>${dataset.year}</strong></td><td>${dataset.fileName}</td><td>${dataset.sheetName}</td><td>${dataset.rowCount}</td><td>${new Date(dataset.importedAt).toLocaleDateString("fr-FR")}</td><td><span class="badge completed">Dernière version</span></td></tr>`).join("");
-  const datasetSection = `<section class="panel wide"><div class="panel-head"><h2>Datasets importés</h2><span>Dernière version par année</span></div>${datasetRows ? `<div class="table-wrap"><table><thead><tr><th>Année</th><th>Fichier</th><th>Feuille</th><th>Lignes</th><th>Importé le</th><th>Version</th></tr></thead><tbody>${datasetRows}</tbody></table></div>` : `<p class="muted">Aucun dataset importé. Importez un fichier Excel annuel pour le retrouver ici.</p>`}</section>`;
+  const datasetRows = datasets.map((dataset) => `<tr><td><strong>${dataset.year}</strong></td><td>${dataset.fileName}</td><td>${dataset.sheetName}</td><td>${dataset.rowCount}</td><td>${new Date(dataset.importedAt).toLocaleDateString("fr-FR")}</td><td><span class="badge completed">Dernière version</span></td><td><button class="link-btn" data-action="download-dataset" data-year="${dataset.year}">Télécharger</button></td></tr>`).join("");
+  const datasetSection = `<section class="panel wide"><div class="panel-head"><h2>Datasets importés</h2><span>Dernière version par année</span></div>${datasetRows ? `<div class="table-wrap"><table><thead><tr><th>Année</th><th>Fichier</th><th>Feuille</th><th>Lignes</th><th>Importé le</th><th>Version</th><th>Action</th></tr></thead><tbody>${datasetRows}</tbody></table></div>` : `<p class="muted">Aucun dataset importé. Importez un fichier Excel annuel pour le retrouver ici.</p>`}</section>`;
   document.getElementById("reports").innerHTML = `${datasetSection}<div class="dashboard-grid"><section class="panel"><h2>Rapport recrutement</h2><p class="muted">Synthèse des offres, candidats et scores.</p><button class="btn primary" data-action="download-report" data-type="recruitment">Télécharger CSV</button></section><section class="panel"><h2>Rapport RH TDB</h2><p class="muted">Effectif, turnover, contrats et pyramides.</p><button class="btn primary" data-action="download-report" data-type="tdb">Télécharger CSV</button></section></div>`;
 }
 
 function renderNotifications() {
   document.getElementById("notifications").innerHTML = `<section class="panel"><div class="panel-head"><h2>Notifications</h2><button class="btn ghost" data-action="mark-notifications">Tout marquer comme lu</button></div><div class="activity-list">${notificationsData.map((x, index) => `<div class="${appState.notificationsRead.has(index) ? "done" : ""}"><span></span>${x}</div>`).join("")}</div></section>`;
+}
+
+function downloadDataset(year) {
+  const file = importedDatasetFiles.get(year);
+  if (!file) {
+    toast("Le fichier original n'est plus disponible dans cette session. Réimportez-le pour le télécharger.");
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file.name;
+  link.click();
+  URL.revokeObjectURL(url);
+  pushActivity(`Dataset ${year} téléchargé par ${session.user}`);
 }
 
 function downloadReport(type) {
@@ -1961,6 +1982,7 @@ document.addEventListener("click", (e) => {
   }
   if (action === "interview-status") { const item = interviews.find((i) => i[0] === actionEl.dataset.id); if (item) item[6] = actionEl.dataset.status; rerenderKeepView(); setView("interviews"); }
   if (action === "download-report") downloadReport(actionEl.dataset.type);
+  if (action === "download-dataset") downloadDataset(actionEl.dataset.year);
   if (action === "mark-notifications") { notificationsData.forEach((_, index) => appState.notificationsRead.add(index)); rerenderKeepView(); setView("notifications"); }
   if (action === "chat-prompt") submitChat(actionEl.dataset.prompt || "");
 });
