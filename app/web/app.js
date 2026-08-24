@@ -1478,8 +1478,13 @@ function applyLocalModification(action) {
   if (action.type === "candidate-status") {
     const c = candidates[action.index];
     if (!c) return "Ce candidat n'existe plus.";
+    let interviewSchedule = null;
+    if (action.status === "interview") {
+      interviewSchedule = askInterviewSchedule();
+      if (!interviewSchedule) return "Planification annulée : la date et l'heure de l'entretien sont obligatoires.";
+    }
     c[5] = action.status;
-    if (action.status === "interview") interviews.unshift([`INT-${Date.now()}`, c[0], c[1], new Date().toLocaleDateString("fr-FR"), "10:00", session.user, "planned"]);
+    if (interviewSchedule) interviews.unshift([`INT-${Date.now()}`, c[0], c[1], interviewSchedule.date, interviewSchedule.time, session.user, "planned"]);
     pushActivity(`Chatbot RH: ${c[0]} -> ${statusLabels[c[5]]} (confirmé par ${session.user})`);
     return `Statut mis à jour: ${c[0]} est maintenant "${statusLabels[c[5]]}".`;
   }
@@ -1491,6 +1496,20 @@ function applyLocalModification(action) {
     return `Offre mise à jour: ${job[0]} est maintenant "${statusLabels[job[7]]}".`;
   }
   return "Action inconnue.";
+}
+
+function askInterviewSchedule() {
+  const date = window.prompt("Date de l'entretien (JJ/MM/AAAA) :");
+  if (!date || !/^\d{2}\/\d{2}\/\d{4}$/.test(date.trim())) {
+    if (date) toast("Saisissez une date au format JJ/MM/AAAA.");
+    return null;
+  }
+  const time = window.prompt("Heure de l'entretien (HH:MM) :");
+  if (!time || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time.trim())) {
+    if (time) toast("Saisissez une heure au format HH:MM.");
+    return null;
+  }
+  return { date: date.trim(), time: time.trim() };
 }
 
 function answerChatLocal(rawMessage) {
@@ -1979,8 +1998,13 @@ document.addEventListener("click", (e) => {
   }
   if (action === "candidate-status") {
     const c = candidates[selectedCandidateIndex];
+    let interviewSchedule = null;
+    if (actionEl.dataset.status === "interview") {
+      interviewSchedule = askInterviewSchedule();
+      if (!interviewSchedule) return;
+    }
     c[5] = actionEl.dataset.status;
-    if (c[5] === "interview") interviews.unshift([`INT-${Date.now()}`, c[0], c[1], new Date().toLocaleDateString("fr-FR"), "10:00", session.user, "planned"]);
+    if (interviewSchedule) interviews.unshift([`INT-${Date.now()}`, c[0], c[1], interviewSchedule.date, interviewSchedule.time, session.user, "planned"]);
     pushActivity(`${c[0]} -> ${statusLabels[c[5]]}`);
     toast(`Statut mis a jour: ${statusLabels[c[5]]}.`, "success");
     rerenderKeepView();
