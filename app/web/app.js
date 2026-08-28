@@ -8,10 +8,17 @@ let realDataset = null;
 let rawImportRows = null;
 let rawImportWorkbook = null;
 let rawImportFileName = null;
+let rawEmployeeRows = null;
+let rawOvertimeRows = null;
+let rawOvertimeFileName = null;
+let rawLeaveRows = null;
+let rawLeaveFileName = null;
 let currentSearch = "";
 let selectedCandidateIndex = 0;
 const DATASET_HISTORY_KEY = "sonasid_rh_dataset_history";
 const DATASET_CACHE_KEY = "sonasid_rh_dataset_cache";
+const OVERTIME_CACHE_KEY = "sonasid_rh_overtime_cache";
+const LEAVE_CACHE_KEY = "sonasid_rh_leave_cache";
 const importedDatasetFiles = new Map();
 
 function datasetYearFromFileName(fileName) {
@@ -70,6 +77,8 @@ const appState = {
   agentStatus: {},
   agentProgress: 0,
   importStatus: { state: "idle" },
+  overtimeImportStatus: { state: "idle" },
+  leaveImportStatus: { state: "idle" },
   agentLastRun: "En attente",
   chat: [
     ["bot", "Bonjour. Posez une question RH sur le recrutement, l'effectif, le turnover, un candidat ou une offre (ex: JOB-024)."],
@@ -133,8 +142,150 @@ function pushActivity(message) {
   if (activities.length > 10) activities.pop();
 }
 
+function employeeField(employee, keys, fallback = "") {
+  const key = keys.find((item) => employee[item] !== undefined && employee[item] !== null && employee[item] !== "");
+  return key ? employee[key] : fallback;
+}
+
+function employeeDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getFilteredEmployeeRows() {
+  if (!rawEmployeeRows) return [];
+  const { matricule, activite, dateFrom, dateTo } = appState.dashboardFilters;
+  let filtered = rawEmployeeRows;
+  if (matricule && matricule.trim()) {
+    const q = normalizeForMatch(matricule);
+    filtered = filtered.filter((employee) => normalizeForMatch(employeeField(employee, ["matricule"])).includes(q));
+  }
+  if (activite && activite.trim()) {
+    const q = normalizeForMatch(activite);
+    filtered = filtered.filter((employee) => normalizeForMatch(employeeField(employee, ["departement", "department", "service", "direction"])).includes(q));
+  }
+  if (dateFrom || dateTo) {
+    const from = dateFrom ? new Date(`${dateFrom}T00:00:00`) : null;
+    const to = dateTo ? new Date(`${dateTo}T23:59:59.999`) : null;
+    filtered = filtered.filter((employee) => {
+      const created = employeeDate(employeeField(employee, ["created_at", "updated_at"]));
+      return !created || ((!from || created >= from) && (!to || created <= to));
+    });
+  }
+  return filtered;
+}
+
+function countBy(rows, keys, fallback = "Non renseigne") {
+  const counts = {};
+  rows.forEach((row) => {
+    const label = String(employeeField(row, keys, fallback)).trim() || fallback;
+    counts[label] = (counts[label] || 0) + 1;
+  });
+  return Object.entries(counts).map(([label, value]) => ({ label, value }));
+}
+
+function buildDatasetFromEmployees(rows, sourceFile = "MongoDB employees") {
+  const total = rows.length;
+  const active = rows.filter((employee) => normalizeForMatch(employeeField(employee, ["statut", "status"], "actif")) === "actif");
+  const activeCount = active.length;
+  const departments = countBy(active, ["departement", "department", "service", "direction"]);
+  const postes = countBy(active, ["poste", "fonction", "job_title"]);
+  const statusRows = countBy(rows, ["statut", "status"]);
+  const dist = {
+    contrats: postes,
+    college: departments,
+    genre: [],
+    ageByGender: [],
+    seniorityByGender: [],
+    contractDeadline: [],
+    contractDeadlineDays: [],
+    monthlyActivity: [],
+    departureReasons: [],
+    movementsCumulative: null,
+  };
+  const summary = {
+    effectifTotal: total,
+    effectifActif: activeCount,
+    cdi: 0,
+    anapec: 0,
+    turnover: "0%",
+    recruitments: 0,
+    departures: 0,
+    ageAverage: "Non disponible",
+    seniorityAverage: "Non disponible",
+    encadrement: "0%",
+    hs: rawOvertimeRows ? computeOvertimeSummary(rawOvertimeRows, rawOvertimeFileName || "Fichier HS") : null,
+    conges: rawLeaveRows ? computeLeaveSummary(rawLeaveRows, rawLeaveFileName || "Fichier CR") : null,
+    effectifEntreprise: null,
+  };
+  const pct = (n) => `${(((n || 0) / (activeCount || 1)) * 100).toFixed(1)}%`;
+  const kpiGroups = [
+    { title: "Effectif MongoDB", tag: "collection employees", items: [
+      { label: "Effectif actif", pct: pct(activeCount), value: activeCount, tone: "up" },
+      { label: "Effectif total", value: total, tone: "info" },
+      ...statusRows.map((row) => ({ label: row.label, pct: pct(row.value), value: row.value, tone: "info" })),
+    ] },
+    { title: "Repartition du personnel", tag: "par departement", items: departments.slice(0, 6).map((row) => ({ label: row.label, pct: pct(row.value), value: row.value, tone: "info" })) },
+    { title: "Contrats / postes", tag: "champ poste", items: postes.slice(0, 6).map((row) => ({ label: row.label, pct: pct(row.value), value: row.value, tone: "info" })) },
+  ];
+  return {
+    sourceFile,
+    site: "SONASID Nador",
+    period: "MongoDB employees",
+    generatedFrom: "base MongoDB",
+    sheets: [{ name: "employees", rows: total, columns: rows[0] ? Object.keys(rows[0]).length : 0, nonEmptyCells: rows.reduce((sum, row) => sum + Object.values(row).filter((value) => value !== null && value !== "").length, 0) }],
+    summary,
+    distributions: dist,
+    kpiGroups,
+    employeeRows: rows,
+    agents: [],
+  };
+}
+
 async function loadRealDataset() {
   try {
+    try {
+      const overtimeCache = JSON.parse(localStorage.getItem(OVERTIME_CACHE_KEY) || "null");
+      if (overtimeCache?.rows?.length) {
+        rawOvertimeRows = overtimeCache.rows;
+        rawOvertimeFileName = overtimeCache.fileName;
+      }
+    } catch {
+      rawOvertimeRows = null;
+      rawOvertimeFileName = null;
+    }
+    try {
+      const leaveCache = JSON.parse(localStorage.getItem(LEAVE_CACHE_KEY) || "null");
+      if (leaveCache?.rows?.length) {
+        rawLeaveRows = leaveCache.rows;
+        rawLeaveFileName = leaveCache.fileName;
+      }
+    } catch {
+      rawLeaveRows = null;
+      rawLeaveFileName = null;
+    }
+    const employeeResponse = await fetch("/api/v1/employees", { cache: "no-store", headers: authHeaders() });
+    if (employeeResponse.ok) {
+      const employees = await employeeResponse.json();
+      if (Array.isArray(employees) && employees.length) {
+        const hasTdbColumns = employees.some((employee) => employee.MATRICULE !== undefined || employee["Toujours � la sonasid la sonasid"] !== undefined || employee["Toujours à la sonasid la sonasid"] !== undefined);
+        if (hasTdbColumns) {
+          rawImportRows = employees;
+          rawImportWorkbook = null;
+          rawImportFileName = "MongoDB employes";
+          rawEmployeeRows = null;
+          realDataset = buildDatasetFromRows(getFilteredDashboardRows(), rawImportFileName, null);
+        } else {
+          rawEmployeeRows = employees;
+          rawImportRows = null;
+          rawImportWorkbook = null;
+          rawImportFileName = null;
+          realDataset = buildDatasetFromEmployees(getFilteredEmployeeRows());
+        }
+        return;
+      }
+    }
     const cached = JSON.parse(localStorage.getItem(DATASET_CACHE_KEY) || "null");
     if (cached?.rows?.length) {
       rawImportRows = cached.rows;
@@ -332,11 +483,53 @@ function renderHsPanel() {
   </div></section>`;
 }
 
+function renderOvertimePanel() {
+  if (!realDataset) return `<section class="panel wide hs-panel"><div class="panel-head"><h2>Heures supplementaires (HS)</h2><span>aucun fichier importe</span></div><p class="empty-col">Importez le fichier Excel annuel ou le fichier HS pour afficher ce volet.</p></section>`;
+  const hs = realDataset.summary.hs;
+  if (!hs) return `<section class="panel wide hs-panel"><div class="panel-head"><h2>Heures supplementaires (HS)</h2><span>non disponible</span></div><p class="empty-col">Importez un fichier HS avec Matricule, heures supp et les rubriques de paie pour afficher ce calcul.</p></section>`;
+  const components = hs.componentTotals || [];
+  const max = Math.max(1, ...components.map((row) => row.value || 0));
+  const topRows = (hs.topEmployees || []).map((row) => `<tr><td>${row.matricule || "-"}</td><td>${row.nom || "-"}</td><td>${row.hours.toLocaleString("fr-FR")}</td><td>${Math.round(row.amount).toLocaleString("fr-FR")} DH</td></tr>`).join("");
+  return `<section class="panel wide hs-panel">
+    <div class="panel-head"><h2>Heures supplementaires (HS)</h2><span>${hs.sourceFile || "dataset reel"}${hs.sheet ? ` - ${hs.sheet}` : ""}</span></div>
+    <div class="hs-formula">Base HS = salaire de base + anciennete + salissure + poste douche + panier + chef de poste + chaleur</div>
+    <div class="stat-tiles hs-tiles">
+      <article><strong>${(hs.totalHours || 0).toLocaleString("fr-FR")}</strong><span>heures / forfait HS</span></article>
+      <article><strong>${Math.round(hs.assietteTotal || 0).toLocaleString("fr-FR")} DH</strong><span>base de calcul cumulee</span></article>
+      <article><strong>${Math.round(hs.total || 0).toLocaleString("fr-FR")} DH</strong><span>montant estime HS</span></article>
+      <article><strong>${hs.count || 0}</strong><span>salaries concernes</span></article>
+    </div>
+    ${components.length ? `<div class="hs-bars">${components.map((row) => `<div class="hs-bar-row"><span>${row.label}</span><div><i style="width:${(row.value / max) * 100}%"></i></div><strong>${Math.round(row.value).toLocaleString("fr-FR")} DH</strong></div>`).join("")}</div>` : ""}
+    ${topRows ? `<div class="table-wrap hs-table"><table><thead><tr><th>Matricule</th><th>Salarie</th><th>HS</th><th>Montant</th></tr></thead><tbody>${topRows}</tbody></table></div>` : ""}
+  </section>`;
+}
+
 function renderCongesPanel() {
   if (!realDataset) return `<section class="panel"><div class="panel-head"><h2>Congés (CR)</h2><span>aucun fichier importé</span></div><p class="empty-col">Importez le fichier Excel annuel pour afficher ce volet.</p></section>`;
   const conges = realDataset.summary.conges;
   if (!conges) return `<section class="panel"><div class="panel-head"><h2>Congés (CR)</h2><span>non disponible</span></div><p class="empty-col">Aucune colonne "Congés" trouvée dans le fichier importé.</p></section>`;
   return `<section class="panel"><div class="panel-head"><h2>Congés (CR)</h2><span>dataset réel — ${conges.sheet}</span></div><div class="stat-tiles"><article><strong>${conges.total.toLocaleString("fr-FR")}</strong><span>jours (colonne "${conges.sheet}")</span></article></div></section>`;
+}
+
+function renderLeavePanel() {
+  if (!realDataset) return `<section class="panel wide cr-panel"><div class="panel-head"><h2>Conges recuperation (CR)</h2><span>aucun fichier importe</span></div><p class="empty-col">Importez le fichier CR pour afficher le calcul.</p></section>`;
+  const cr = realDataset.summary.conges;
+  if (!cr) return `<section class="panel wide cr-panel"><div class="panel-head"><h2>Conges recuperation (CR)</h2><span>non disponible</span></div><p class="empty-col">Importez un fichier CR avec salaire de base, taux anciennete, indemnites et jours de conge.</p></section>`;
+  const components = cr.componentTotals || [];
+  const max = Math.max(1, ...components.map((row) => row.value || 0));
+  const topRows = (cr.topEmployees || []).map((row) => `<tr><td>${row.matricule || "-"}</td><td>${row.nom || "-"}</td><td>${row.leaveDays.toLocaleString("fr-FR")}</td><td>${Math.round(row.dailyLeaveAmount).toLocaleString("fr-FR")} DH</td><td>${Math.round(row.leaveAmount).toLocaleString("fr-FR")} DH</td></tr>`).join("");
+  return `<section class="panel wide cr-panel">
+    <div class="panel-head"><h2>Conges recuperation (CR)</h2><span>${cr.sourceFile || "dataset reel"}${cr.sheet ? ` - ${cr.sheet}` : ""}</span></div>
+    <div class="cr-formula">Montant anciennete = taux anciennete x salaire de base. Salaire brut = base + anciennete + indemnites. Conge/jour = salaire brut / 26.</div>
+    <div class="stat-tiles cr-tiles">
+      <article><strong>${Math.round(cr.grossTotal || 0).toLocaleString("fr-FR")} DH</strong><span>salaire brut cumule</span></article>
+      <article><strong>${Math.round(cr.dailyTotal || 0).toLocaleString("fr-FR")} DH</strong><span>montant conge/jour cumule</span></article>
+      <article><strong>${(cr.totalDays || 0).toLocaleString("fr-FR")}</strong><span>jours CR</span></article>
+      <article><strong>${Math.round(cr.total || 0).toLocaleString("fr-FR")} DH</strong><span>montant total CR</span></article>
+    </div>
+    ${components.length ? `<div class="cr-bars">${components.map((row) => `<div class="cr-bar-row"><span>${row.label}</span><div><i style="width:${(row.value / max) * 100}%"></i></div><strong>${Math.round(row.value).toLocaleString("fr-FR")} DH</strong></div>`).join("")}</div>` : ""}
+    ${topRows ? `<div class="table-wrap cr-table"><table><thead><tr><th>Matricule</th><th>Salarie</th><th>Jours</th><th>Conge/jour</th><th>Total CR</th></tr></thead><tbody>${topRows}</tbody></table></div>` : ""}
+  </section>`;
 }
 
 function renderEffectifErPanel() {
@@ -432,7 +625,7 @@ function renderDeadlineAlertBanner(daysList) {
 // lesquelles on dispose des lignes brutes necessaires au filtrage).
 function renderDashboardFilters() {
   const f = appState.dashboardFilters;
-  const enabled = !!rawImportRows;
+  const enabled = !!rawImportRows || !!rawEmployeeRows;
   const hasActiveFilter = f.matricule || f.activite || f.dateFrom || f.dateTo;
   return `<section class="filters-bar${enabled ? "" : " disabled"}">
     <span class="filters-bar-label">Filtrer les données</span>
@@ -478,8 +671,8 @@ function renderDashboard() {
       ${renderDashboardFilters()}
       <div class="dashboard-grid">
         ${renderMovementsChart("Mouvements du personnel (cumul annuel)", null)}
-        ${renderHsPanel()}
-        ${renderCongesPanel()}
+        ${renderOvertimePanel()}
+        ${renderLeavePanel()}
         ${renderDeadlinePyramid("Pyramide des échéances de contrats", null, null)}
         ${renderDeparturesPanel()}
         ${renderPyramid("Pyramide des âges (H/F)", null)}
@@ -498,8 +691,8 @@ function renderDashboard() {
     <div class="kpi-groups-grid">${realDataset.kpiGroups.map((g) => (g.type === "distribution" ? renderKpiDistributionCard(g.title, g.tag, g.rows) : renderKpiGroup(g))).join("")}</div>
     <div class="dashboard-grid">
       ${renderMovementsChart("Mouvements du personnel (cumul annuel)", dist.movementsCumulative)}
-      ${renderHsPanel()}
-      ${renderCongesPanel()}
+      ${renderOvertimePanel()}
+      ${renderLeavePanel()}
       ${renderDeadlinePyramid("Pyramide des échéances de contrats", dist.contractDeadline, daysList)}
       ${renderPyramid("Pyramide des âges (H/F)", dist.ageByGender)}
       ${renderPyramid("Pyramide d'ancienneté (H/F)", dist.seniorityByGender)}
@@ -513,7 +706,18 @@ function renderDashboard() {
 // lignes brutes du dernier import Excel, en relançant EXACTEMENT la meme
 // fonction de calcul que l'import initial (aucune nouvelle logique de calcul).
 function applyDashboardFilters() {
-  if (!rawImportRows) { renderDashboard(); return; }
+  if (!rawImportRows && !rawEmployeeRows) { renderDashboard(); return; }
+  if (rawEmployeeRows && !rawImportRows) {
+    realDataset = buildDatasetFromEmployees(getFilteredEmployeeRows());
+    renderDashboard();
+    return;
+  }
+  realDataset = buildDatasetFromRows(getFilteredDashboardRows(), rawImportFileName, rawImportWorkbook);
+  renderDashboard();
+}
+
+function getFilteredDashboardRows() {
+  if (!rawImportRows) return [];
   const { matricule, activite, dateFrom, dateTo } = appState.dashboardFilters;
   let filtered = rawImportRows;
   if (matricule && matricule.trim()) {
@@ -532,8 +736,7 @@ function applyDashboardFilters() {
       return !start || ((!from || start >= from) && (!to || start <= to));
     });
   }
-  realDataset = buildDatasetFromRows(filtered, rawImportFileName, rawImportWorkbook);
-  renderDashboard();
+  return filtered;
 }
 
 // Conserve le focus + la position du curseur sur un champ de filtre pendant
@@ -555,6 +758,8 @@ function withFocusPreserved(action, fn) {
 
 function renderImportData() {
   const status = appState.importStatus || { state: "idle" };
+  const hsStatus = appState.overtimeImportStatus || { state: "idle" };
+  const leaveStatus = appState.leaveImportStatus || { state: "idle" };
   const banner = realDataset
     ? `<div class="import-current"><span>Dataset actuellement chargé</span><strong>${realDataset.sourceFile}</strong><small>${realDataset.site} - période ${realDataset.period}</small></div>`
     : `<div class="import-current empty"><span>Aucun fichier importé</span><strong>Le dashboard est actuellement vide</strong></div>`;
@@ -562,6 +767,15 @@ function renderImportData() {
   if (status.state === "loading") statusMarkup = `<div class="import-status loading">Analyse du fichier Excel en cours...</div>`;
   else if (status.state === "success") statusMarkup = `<div class="import-status success">Import réussi: ${status.message}</div>`;
   else if (status.state === "error") statusMarkup = `<div class="import-status error">Erreur d'import: ${status.message}</div>`;
+
+  let hsStatusMarkup = "";
+  if (hsStatus.state === "loading") hsStatusMarkup = `<div class="import-status loading">Analyse du fichier HS en cours...</div>`;
+  else if (hsStatus.state === "success") hsStatusMarkup = `<div class="import-status success">Import HS reussi: ${hsStatus.message}</div>`;
+  else if (hsStatus.state === "error") hsStatusMarkup = `<div class="import-status error">Erreur import HS: ${hsStatus.message}</div>`;
+  let leaveStatusMarkup = "";
+  if (leaveStatus.state === "loading") leaveStatusMarkup = `<div class="import-status loading">Analyse du fichier CR en cours...</div>`;
+  else if (leaveStatus.state === "success") leaveStatusMarkup = `<div class="import-status success">Import CR reussi: ${leaveStatus.message}</div>`;
+  else if (leaveStatus.state === "error") leaveStatusMarkup = `<div class="import-status error">Erreur import CR: ${leaveStatus.message}</div>`;
 
   const sheetSynthesis = realDataset
     ? `<section class="panel wide sheet-panel"><div class="panel-head"><h2>Synthèse du dernier fichier importé</h2><span>${realDataset.generatedFrom}</span></div><div class="sheet-list">${realDataset.sheets.map((s) => `<article><strong>${s.name}</strong><span>${s.rows} lignes</span><span>${s.columns} colonnes</span><b>${s.nonEmptyCells} cellules</b></article>`).join("")}</div></section>`
@@ -574,6 +788,22 @@ function renderImportData() {
       <input id="importExcelInput" class="sr-only" type="file" accept=".xlsx,.xls" />
       <button class="dropzone" data-action="import-excel-trigger">Sélectionner le fichier Excel annuel<br><small>Format accepté: .xlsx</small></button>
       ${statusMarkup}
+    </section>
+    <section class="panel">
+      <h2>Importer les heures supplementaires</h2>
+      <p class="muted">Le fichier HS peut contenir Matricule, Nom, heures supp, salaire de base, anciennete, indemnite salissure, poste douche, panier, chef de poste et chaleur.</p>
+      <input id="importHsInput" class="sr-only" type="file" accept=".xlsx,.xls,.csv" />
+      <button class="dropzone hs-dropzone" data-action="import-hs-trigger">Selectionner le fichier HS<br><small>Calcul: base + anciennete + primes</small></button>
+      ${rawOvertimeFileName ? `<div class="import-current"><span>Fichier HS charge</span><strong>${rawOvertimeFileName}</strong><small>${realDataset?.summary?.hs ? `${realDataset.summary.hs.rowCount || 0} lignes exploitees` : "en attente du dashboard"}</small></div>` : ""}
+      ${hsStatusMarkup}
+    </section>
+    <section class="panel">
+      <h2>Importer les conges CR</h2>
+      <p class="muted">Le fichier CR peut contenir Matricule, salaire de base, taux anciennete, indemnites et jours CR. Le montant journalier est calcule sur 26.</p>
+      <input id="importCrInput" class="sr-only" type="file" accept=".xlsx,.xls,.csv" />
+      <button class="dropzone cr-dropzone" data-action="import-cr-trigger">Selectionner le fichier CR<br><small>Calcul: brut / 26</small></button>
+      ${rawLeaveFileName ? `<div class="import-current"><span>Fichier CR charge</span><strong>${rawLeaveFileName}</strong><small>${realDataset?.summary?.conges ? `${realDataset.summary.conges.rowCount || 0} lignes exploitees` : "en attente du dashboard"}</small></div>` : ""}
+      ${leaveStatusMarkup}
     </section>
     <section class="panel">
       <h2>État de l'import</h2>
@@ -621,6 +851,187 @@ function findNumericColumnAcrossSheets(workbook, keywords) {
     }
   }
   return null;
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const cleaned = String(value).replace(/\s/g, "").replace(",", ".");
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getNumericByKeywords(row, keywords, excluded = []) {
+  const key = Object.keys(row).find((k) => {
+    const normalized = normalizeForMatch(k);
+    return keywords.some((kw) => normalized.includes(kw)) && !excluded.some((kw) => normalized.includes(kw));
+  });
+  return key ? toNumber(row[key]) : 0;
+}
+
+function rowsFromSheetSmart(sheet) {
+  const directRows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+  const hasKnownHeaders = directRows.some((row) => Object.keys(row).some((key) => {
+    const normalized = normalizeForMatch(key);
+    return normalized.includes("matricule") || normalized === "base" || normalized.includes("forfait hs");
+  }));
+  if (hasKnownHeaders) return directRows;
+
+  const grid = XLSX.utils.sheet_to_json(sheet, { defval: null, header: 1 });
+  const headerIndex = grid.findIndex((row) => row.some((cell) => {
+    const normalized = normalizeForMatch(cell);
+    return normalized.includes("matricule") || normalized === "base" || normalized.includes("forfait hs");
+  }));
+  if (headerIndex < 0) return directRows;
+
+  const headers = grid[headerIndex].map((cell, index) => String(cell || `col_${index + 1}`).trim());
+  return grid.slice(headerIndex + 1).map((row) => {
+    const record = {};
+    headers.forEach((header, index) => { record[header] = row[index] ?? null; });
+    return record;
+  });
+}
+
+function computeOvertimeSummary(rows, sourceFile = "Fichier HS") {
+  const cleanRows = (rows || []).filter((row) => row && Object.values(row).some((value) => value !== null && value !== ""));
+  if (!cleanRows.length) return null;
+
+  const components = [
+    { key: "base", label: "Salaire de base", value: (row) => getNumericByKeywords(row, ["base", "salaire de base"]) },
+    { key: "anciennete", label: "Anciennete", value: (row) => {
+      const direct = getNumericByKeywords(row, ["anciennete"], ["taux", "pyramide"]);
+      if (direct) return direct;
+      const base = getNumericByKeywords(row, ["base", "salaire de base"]);
+      const rate = getNumericByKeywords(row, ["taux prime anciennete", "taux anciennete"]);
+      return base && rate ? (base * rate) / 100 : 0;
+    } },
+    { key: "salissure", label: "Indemnite salissure", value: (row) => getNumericByKeywords(row, ["salissure"]) },
+    { key: "poste_douche", label: "Poste douche", value: (row) => getNumericByKeywords(row, ["poste douche"]) },
+    { key: "panier", label: "Panier", value: (row) => getNumericByKeywords(row, ["panier"]) },
+    { key: "chef_poste", label: "Chef de poste", value: (row) => getNumericByKeywords(row, ["chef de poste", "chef poste"]) },
+    { key: "chaleur", label: "Chaleur", value: (row) => getNumericByKeywords(row, ["chaleur"]) },
+  ];
+
+  const rowsComputed = cleanRows.map((row) => {
+    const values = components.map((component) => ({ ...component, amount: component.value(row) }));
+    const assiette = values.reduce((sum, item) => sum + item.amount, 0);
+    const hours = getNumericByKeywords(row, ["heures supp", "heure supp", "nb hs", "nombre hs", "hs", "forfait hs"]);
+    const matricule = findColumnValue(row, ["matricule"]) || "";
+    const nom = [findColumnValue(row, ["prenom"]) || "", findColumnValue(row, ["nom"]) || ""].join(" ").trim();
+    const hourlyRate = assiette > 0 ? assiette / 191 : 0;
+    return {
+      matricule,
+      nom,
+      hours,
+      assiette,
+      amount: hours > 0 ? hourlyRate * hours : 0,
+      components: values,
+    };
+  }).filter((row) => row.assiette > 0 || row.hours > 0);
+
+  if (!rowsComputed.length) return null;
+
+  const componentTotals = components.map((component) => ({
+    key: component.key,
+    label: component.label,
+    value: rowsComputed.reduce((sum, row) => sum + (row.components.find((item) => item.key === component.key)?.amount || 0), 0),
+  })).filter((row) => row.value > 0);
+
+  return {
+    sourceFile,
+    count: rowsComputed.filter((row) => row.hours > 0 || row.amount > 0).length,
+    rowCount: rowsComputed.length,
+    totalHours: rowsComputed.reduce((sum, row) => sum + row.hours, 0),
+    assietteTotal: rowsComputed.reduce((sum, row) => sum + row.assiette, 0),
+    total: rowsComputed.reduce((sum, row) => sum + row.amount, 0),
+    componentTotals,
+    topEmployees: rowsComputed
+      .filter((row) => row.hours > 0 || row.amount > 0)
+      .sort((a, b) => b.amount - a.amount || b.hours - a.hours)
+      .slice(0, 5),
+  };
+}
+
+function computeOvertimeFromWorkbook(workbook, sourceFile) {
+  if (!workbook) return null;
+  let best = null;
+  for (const sheetName of workbook.SheetNames) {
+    const rows = rowsFromSheetSmart(workbook.Sheets[sheetName]);
+    const summary = computeOvertimeSummary(rows, sourceFile);
+    if (summary && (!best || summary.componentTotals.length > best.componentTotals.length || summary.rowCount > best.rowCount)) {
+      best = { ...summary, sheet: sheetName };
+    }
+  }
+  return best;
+}
+
+function computeLeaveSummary(rows, sourceFile = "Fichier CR") {
+  const cleanRows = (rows || []).filter((row) => row && Object.values(row).some((value) => value !== null && value !== ""));
+  if (!cleanRows.length) return null;
+
+  const indemnityComponents = [
+    { key: "salissure", label: "Indemnite salissure", value: (row) => getNumericByKeywords(row, ["salissure"]) },
+    { key: "poste_douche", label: "Poste douche", value: (row) => getNumericByKeywords(row, ["poste douche"]) },
+    { key: "panier", label: "Panier", value: (row) => getNumericByKeywords(row, ["panier"]) },
+    { key: "chef_poste", label: "Chef de poste", value: (row) => getNumericByKeywords(row, ["chef de poste", "chef poste"]) },
+    { key: "chaleur", label: "Chaleur", value: (row) => getNumericByKeywords(row, ["chaleur"]) },
+    { key: "transport", label: "Transport", value: (row) => getNumericByKeywords(row, ["transport"]) },
+    { key: "poste", label: "Indemnite poste", value: (row) => getNumericByKeywords(row, ["indemnite poste"], ["douche"]) },
+  ];
+
+  const rowsComputed = cleanRows.map((row) => {
+    const base = getNumericByKeywords(row, ["base", "salaire de base"]);
+    const directSeniority = getNumericByKeywords(row, ["anciennete"], ["taux", "pyramide"]);
+    const seniorityRate = getNumericByKeywords(row, ["taux prime anciennete", "taux anciennete"]);
+    const seniorityAmount = directSeniority || (base && seniorityRate ? (base * seniorityRate) / 100 : 0);
+    const indemnities = indemnityComponents.map((component) => ({ ...component, amount: component.value(row) }));
+    const indemnityTotal = indemnities.reduce((sum, item) => sum + item.amount, 0);
+    const grossSalary = base + seniorityAmount + indemnityTotal;
+    const leaveDays = getNumericByKeywords(row, ["conge", "cr", "jours conge", "solde cp", "jours cr"]);
+    const dailyLeaveAmount = grossSalary > 0 ? grossSalary / 26 : 0;
+    const leaveAmount = leaveDays > 0 ? dailyLeaveAmount * leaveDays : dailyLeaveAmount;
+    const matricule = findColumnValue(row, ["matricule"]) || "";
+    const nom = [findColumnValue(row, ["prenom"]) || "", findColumnValue(row, ["nom"]) || ""].join(" ").trim();
+    return { matricule, nom, base, seniorityAmount, seniorityRate, indemnityTotal, grossSalary, leaveDays, dailyLeaveAmount, leaveAmount, indemnities };
+  }).filter((row) => row.grossSalary > 0 || row.leaveDays > 0);
+
+  if (!rowsComputed.length) return null;
+
+  const componentTotals = [
+    { key: "base", label: "Salaire de base", value: rowsComputed.reduce((sum, row) => sum + row.base, 0) },
+    { key: "anciennete", label: "Prime anciennete", value: rowsComputed.reduce((sum, row) => sum + row.seniorityAmount, 0) },
+    ...indemnityComponents.map((component) => ({
+      key: component.key,
+      label: component.label,
+      value: rowsComputed.reduce((sum, row) => sum + (row.indemnities.find((item) => item.key === component.key)?.amount || 0), 0),
+    })),
+  ].filter((row) => row.value > 0);
+
+  return {
+    sourceFile,
+    rowCount: rowsComputed.length,
+    totalDays: rowsComputed.reduce((sum, row) => sum + row.leaveDays, 0),
+    grossTotal: rowsComputed.reduce((sum, row) => sum + row.grossSalary, 0),
+    dailyTotal: rowsComputed.reduce((sum, row) => sum + row.dailyLeaveAmount, 0),
+    total: rowsComputed.reduce((sum, row) => sum + row.leaveAmount, 0),
+    componentTotals,
+    topEmployees: rowsComputed
+      .sort((a, b) => b.leaveAmount - a.leaveAmount || b.dailyLeaveAmount - a.dailyLeaveAmount)
+      .slice(0, 5),
+  };
+}
+
+function computeLeaveFromWorkbook(workbook, sourceFile) {
+  if (!workbook) return null;
+  let best = null;
+  for (const sheetName of workbook.SheetNames) {
+    const rows = rowsFromSheetSmart(workbook.Sheets[sheetName]);
+    const summary = computeLeaveSummary(rows, sourceFile);
+    if (summary && (!best || summary.componentTotals.length > best.componentTotals.length || summary.rowCount > best.rowCount)) {
+      best = { ...summary, sheet: sheetName };
+    }
+  }
+  return best;
 }
 
 function buildDatasetFromRows(rows, fileName, workbook) {
@@ -674,7 +1085,8 @@ function buildDatasetFromRows(rows, fileName, workbook) {
       seniorityBuckets[senBucket] = seniorityBuckets[senBucket] || { h: 0, f: 0 };
       seniorityBuckets[senBucket][g] += 1;
     }
-    if (typeof r["Âge"] === "number") { ageSum += r["Âge"]; ageN += 1; }
+    const ageValue = toNumber(findColumnValue(r, ["age"]) ?? r["Âge"]);
+    if (ageValue > 0) { ageSum += ageValue; ageN += 1; }
     if (typeof r["ANCIENNTE"] === "number") { senSum += r["ANCIENNTE"]; senN += 1; }
   });
 
@@ -775,8 +1187,14 @@ function buildDatasetFromRows(rows, fileName, workbook) {
   // On ne recherche ces colonnes que si elles existent reellement dans le
   // classeur importe: si absentes, l'indicateur est marque "non disponible"
   // plutot que de fabriquer une valeur.
-  const hsMatch = findNumericColumnAcrossSheets(workbook, ["forfait hs", "heures suppl", "heure suppl"]);
-  const congeMatch = findNumericColumnAcrossSheets(workbook, ["conge", "solde cp", "jours conge"]);
+  const hsDetailed = rawOvertimeRows
+    ? computeOvertimeSummary(rawOvertimeRows, rawOvertimeFileName || "Fichier HS")
+    : computeOvertimeFromWorkbook(workbook, fileName);
+  const hsMatch = !hsDetailed ? findNumericColumnAcrossSheets(workbook, ["forfait hs", "heures suppl", "heure suppl"]) : null;
+  const leaveDetailed = rawLeaveRows
+    ? computeLeaveSummary(rawLeaveRows, rawLeaveFileName || "Fichier CR")
+    : computeLeaveFromWorkbook(workbook, fileName);
+  const congeMatch = !leaveDetailed ? findNumericColumnAcrossSheets(workbook, ["conge", "solde cp", "jours conge"]) : null;
   const entrepriseMatch = findNumericColumnAcrossSheets(workbook, ["sous-traitant", "sous traitant"]);
 
   const summary = {
@@ -790,8 +1208,8 @@ function buildDatasetFromRows(rows, fileName, workbook) {
     ageAverage: ageN ? Math.round((ageSum / ageN) * 10) / 10 : 0,
     seniorityAverage: senN ? Math.round((senSum / senN) * 10) / 10 : 0,
     encadrement: total ? `${(((collegeCount["Cadre"] || 0) / total) * 100).toFixed(1)}%` : "0%",
-    hs: hsMatch ? { total: hsMatch.values.reduce((a, b) => a + b, 0), count: hsMatch.values.filter((v) => v > 0).length, sheet: hsMatch.sheetName } : null,
-    conges: congeMatch ? { total: congeMatch.values.reduce((a, b) => a + b, 0), sheet: congeMatch.sheetName } : null,
+    hs: hsDetailed || (hsMatch ? { total: hsMatch.values.reduce((a, b) => a + b, 0), count: hsMatch.values.filter((v) => v > 0).length, sheet: hsMatch.sheetName, totalHours: hsMatch.values.reduce((a, b) => a + b, 0), componentTotals: [], topEmployees: [] } : null),
+    conges: leaveDetailed || (congeMatch ? { total: congeMatch.values.reduce((a, b) => a + b, 0), sheet: congeMatch.sheetName, totalDays: congeMatch.values.reduce((a, b) => a + b, 0), componentTotals: [], topEmployees: [] } : null),
     effectifEntreprise: entrepriseMatch ? { total: entrepriseMatch.values.reduce((a, b) => a + b, 0), sheet: entrepriseMatch.sheetName } : null,
   };
 
@@ -825,8 +1243,8 @@ function buildDatasetFromRows(rows, fileName, workbook) {
         { label: "Retraites cumulées", value: lastMovement.retraite, tone: "info" },
         { label: "Démissions cumulées", value: lastMovement.demission, tone: "warn" },
       ] : []),
-      { label: "Âge moyen", value: `${summary.ageAverage} ans`, tone: "info" },
-      { label: "Ancienneté moyenne", value: `${summary.seniorityAverage} ans`, tone: "info" },
+      { label: "Âge moyen", value: exportYears(summary.ageAverage), tone: "info" },
+      { label: "Ancienneté moyenne", value: exportYears(summary.seniorityAverage), tone: "info" },
       { label: "Hommes", pct: pct(genderCount.h), value: genderCount.h, tone: "info" },
       { label: "Femmes", pct: pct(genderCount.f), value: genderCount.f, tone: "info" },
     ] },
@@ -888,6 +1306,7 @@ async function importAnnualExcel(file) {
     rawImportRows = rows;
     rawImportWorkbook = workbook;
     rawImportFileName = file.name;
+    rawEmployeeRows = null;
     appState.dashboardFilters = { matricule: "", activite: "", dateFrom: "", dateTo: "" };
     realDataset = buildDatasetFromRows(rows, file.name, workbook);
     try {
@@ -903,6 +1322,152 @@ async function importAnnualExcel(file) {
   } catch (error) {
     appState.importStatus = { state: "error", message: error.message || "Fichier illisible." };
     toast(error.message || "Impossible d'importer ce fichier.");
+  }
+  rerenderKeepView();
+  setView("dashboard");
+}
+
+async function importOvertimeExcel(file) {
+  if (!file) return;
+  if (typeof XLSX === "undefined") {
+    appState.overtimeImportStatus = { state: "error", message: "Bibliotheque de lecture Excel indisponible." };
+    rerenderKeepView();
+    setView("import-data");
+    return;
+  }
+  appState.overtimeImportStatus = { state: "loading" };
+  rerenderKeepView();
+  setView("import-data");
+  try {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
+    let best = null;
+    for (const sheetName of workbook.SheetNames) {
+      const rows = rowsFromSheetSmart(workbook.Sheets[sheetName]);
+      const summary = computeOvertimeSummary(rows, file.name);
+      if (summary && (!best || summary.componentTotals.length > best.summary.componentTotals.length || summary.rowCount > best.summary.rowCount)) {
+        best = { sheetName, rows, summary };
+      }
+    }
+    if (!best) throw new Error("Aucune rubrique HS exploitable trouvee dans ce fichier.");
+    rawOvertimeRows = best.rows;
+    rawOvertimeFileName = file.name;
+    try {
+      localStorage.setItem(OVERTIME_CACHE_KEY, JSON.stringify({ rows: best.rows, fileName: file.name }));
+    } catch (storageError) {
+      console.warn("Fichier HS non sauvegarde localement", storageError);
+    }
+    if (rawImportRows) realDataset = buildDatasetFromRows(getFilteredDashboardRows(), rawImportFileName, rawImportWorkbook);
+    else if (rawEmployeeRows) realDataset = buildDatasetFromEmployees(getFilteredEmployeeRows());
+    else realDataset = {
+      sourceFile: file.name,
+      site: "SONASID Nador",
+      period: new Date().toLocaleDateString("fr-FR", { month: "long", year: "numeric" }),
+      generatedFrom: "import HS",
+      sheets: [{ name: best.sheetName, rows: best.rows.length, columns: best.rows[0] ? Object.keys(best.rows[0]).length : 0, nonEmptyCells: best.rows.reduce((sum, row) => sum + Object.values(row).filter((value) => value !== null && value !== "").length, 0) }],
+      summary: {
+        effectifTotal: 0,
+        effectifActif: 0,
+        cdi: 0,
+        anapec: 0,
+        turnover: "0%",
+        recruitments: 0,
+        departures: 0,
+        ageAverage: 0,
+        seniorityAverage: 0,
+        encadrement: "0%",
+        hs: { ...best.summary, sheet: best.sheetName },
+        conges: null,
+        effectifEntreprise: null,
+      },
+      distributions: { contrats: [], college: [], genre: [], ageByGender: [], seniorityByGender: [], contractDeadline: [], contractDeadlineDays: [], monthlyActivity: [], departureReasons: [], movementsCumulative: null },
+      kpiGroups: [{ title: "Heures supplementaires", tag: "fichier HS", items: [
+        { label: "Heures / forfait HS", value: best.summary.totalHours.toLocaleString("fr-FR"), tone: "info" },
+        { label: "Base de calcul", value: `${Math.round(best.summary.assietteTotal).toLocaleString("fr-FR")} DH`, tone: "up" },
+        { label: "Montant estime", value: `${Math.round(best.summary.total).toLocaleString("fr-FR")} DH`, tone: "warn" },
+      ] }],
+      agents: [],
+    };
+    if (realDataset?.summary) realDataset.summary.hs = { ...best.summary, sheet: best.sheetName };
+    appState.overtimeImportStatus = { state: "success", message: `${best.summary.rowCount} lignes HS analysees depuis "${best.sheetName}".` };
+    pushActivity(`Import HS "${file.name}" traite: calcul heures supplementaires mis a jour`);
+    toast("Fichier HS importe, calcul mis a jour.", "success");
+  } catch (error) {
+    appState.overtimeImportStatus = { state: "error", message: error.message || "Fichier HS illisible." };
+    toast(error.message || "Impossible d'importer ce fichier HS.");
+  }
+  rerenderKeepView();
+  setView("dashboard");
+}
+
+async function importLeaveExcel(file) {
+  if (!file) return;
+  if (typeof XLSX === "undefined") {
+    appState.leaveImportStatus = { state: "error", message: "Bibliotheque de lecture Excel indisponible." };
+    rerenderKeepView();
+    setView("import-data");
+    return;
+  }
+  appState.leaveImportStatus = { state: "loading" };
+  rerenderKeepView();
+  setView("import-data");
+  try {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
+    let best = null;
+    for (const sheetName of workbook.SheetNames) {
+      const rows = rowsFromSheetSmart(workbook.Sheets[sheetName]);
+      const summary = computeLeaveSummary(rows, file.name);
+      if (summary && (!best || summary.componentTotals.length > best.summary.componentTotals.length || summary.rowCount > best.summary.rowCount)) {
+        best = { sheetName, rows, summary };
+      }
+    }
+    if (!best) throw new Error("Aucune rubrique CR exploitable trouvee dans ce fichier.");
+    rawLeaveRows = best.rows;
+    rawLeaveFileName = file.name;
+    try {
+      localStorage.setItem(LEAVE_CACHE_KEY, JSON.stringify({ rows: best.rows, fileName: file.name }));
+    } catch (storageError) {
+      console.warn("Fichier CR non sauvegarde localement", storageError);
+    }
+    if (rawImportRows) realDataset = buildDatasetFromRows(getFilteredDashboardRows(), rawImportFileName, rawImportWorkbook);
+    else if (rawEmployeeRows) realDataset = buildDatasetFromEmployees(getFilteredEmployeeRows());
+    else realDataset = {
+      sourceFile: file.name,
+      site: "SONASID Nador",
+      period: new Date().toLocaleDateString("fr-FR", { month: "long", year: "numeric" }),
+      generatedFrom: "import CR",
+      sheets: [{ name: best.sheetName, rows: best.rows.length, columns: best.rows[0] ? Object.keys(best.rows[0]).length : 0, nonEmptyCells: best.rows.reduce((sum, row) => sum + Object.values(row).filter((value) => value !== null && value !== "").length, 0) }],
+      summary: {
+        effectifTotal: 0,
+        effectifActif: 0,
+        cdi: 0,
+        anapec: 0,
+        turnover: "0%",
+        recruitments: 0,
+        departures: 0,
+        ageAverage: 0,
+        seniorityAverage: 0,
+        encadrement: "0%",
+        hs: null,
+        conges: { ...best.summary, sheet: best.sheetName },
+        effectifEntreprise: null,
+      },
+      distributions: { contrats: [], college: [], genre: [], ageByGender: [], seniorityByGender: [], contractDeadline: [], contractDeadlineDays: [], monthlyActivity: [], departureReasons: [], movementsCumulative: null },
+      kpiGroups: [{ title: "Conges CR", tag: "fichier CR", items: [
+        { label: "Salaire brut", value: `${Math.round(best.summary.grossTotal).toLocaleString("fr-FR")} DH`, tone: "up" },
+        { label: "Conge / jour", value: `${Math.round(best.summary.dailyTotal).toLocaleString("fr-FR")} DH`, tone: "info" },
+        { label: "Montant CR", value: `${Math.round(best.summary.total).toLocaleString("fr-FR")} DH`, tone: "warn" },
+      ] }],
+      agents: [],
+    };
+    if (realDataset?.summary) realDataset.summary.conges = { ...best.summary, sheet: best.sheetName };
+    appState.leaveImportStatus = { state: "success", message: `${best.summary.rowCount} lignes CR analysees depuis "${best.sheetName}".` };
+    pushActivity(`Import CR "${file.name}" traite: calcul conges mis a jour`);
+    toast("Fichier CR importe, calcul mis a jour.", "success");
+  } catch (error) {
+    appState.leaveImportStatus = { state: "error", message: error.message || "Fichier CR illisible." };
+    toast(error.message || "Impossible d'importer ce fichier CR.");
   }
   rerenderKeepView();
   setView("dashboard");
@@ -1236,56 +1801,213 @@ function downloadReport(type) {
   URL.revokeObjectURL(url);
 }
 
+function exportValue(value) { return value === null || value === undefined || value === "" ? "Non disponible" : value; }
+
+function exportYears(value) {
+  return typeof value === "number" ? `${value} ans` : exportValue(value);
+}
+
+function pctOf(value, total) {
+  const base = Number(total) || 0;
+  return base ? `${(((Number(value) || 0) / base) * 100).toFixed(1)}%` : "0.0%";
+}
+
+function currentExportPeriod(dataset) {
+  const { dateFrom, dateTo } = appState.dashboardFilters;
+  if (dateFrom || dateTo) {
+    const from = dateFrom ? new Date(`${dateFrom}T00:00:00`).toLocaleDateString("fr-FR") : "debut";
+    const to = dateTo ? new Date(`${dateTo}T00:00:00`).toLocaleDateString("fr-FR") : "aujourd'hui";
+    return `Periode filtree : ${from} - ${to}`;
+  }
+  return dataset ? dataset.period : "Aucun dataset charge";
+}
+
+function activeExportFiltersLabel() {
+  const f = appState.dashboardFilters;
+  const parts = [];
+  if (f.matricule) parts.push(`Matricule: ${f.matricule}`);
+  if (f.activite) parts.push(`Activite: ${f.activite}`);
+  if (f.dateFrom) parts.push(`Du: ${new Date(`${f.dateFrom}T00:00:00`).toLocaleDateString("fr-FR")}`);
+  if (f.dateTo) parts.push(`Au: ${new Date(`${f.dateTo}T00:00:00`).toLocaleDateString("fr-FR")}`);
+  return parts.length ? parts.join(" | ") : "Tous les salaries";
+}
+
+function exportKpiCards(dataset) {
+  if (!dataset) return `<div class="export-empty">Importez un fichier Excel RH pour exporter les indicateurs réels.</div>`;
+  const s = dataset.summary;
+  const reasons = dataset.distributions.departureReasons || [];
+  const dismissals = reasons.find((row) => normalizeForMatch(row.label).includes("licenci"))?.value ?? 0;
+  const icons = {
+    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+    turnover: '<path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/>',
+    exit: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>',
+    hires: '<circle cx="9" cy="8" r="4"/><path d="M3 21v-2a6 6 0 0 1 6-6M19 8v6M16 11h6"/>',
+    age: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    alert: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>'
+  };
+  const cards = [
+    ["Effectif actif", s.effectifActif, `sur ${exportValue(s.effectifTotal)} salaries`, "orange", "users"],
+    ["Turnover", s.turnover, `${exportValue(s.departures)} departs`, "red", "turnover"],
+    ["Licenciements", dismissals, "departs enregistres", "amber", "alert"],
+    ["Recrutements", s.recruitments, "sur la periode", "green", "hires"],
+    ["Age moyen", exportYears(s.ageAverage), "population active", "blue", "age"],
+    ["Departs", s.departures, "tous motifs", "violet", "exit"],
+  ];
+  return cards.map(([label, value, detail, tone, icon]) => `<article class="export-kpi ${tone}"><span class="export-kpi-icon"><svg viewBox="0 0 24 24" aria-hidden="true">${icons[icon]}</svg></span><span>${label}</span><strong>${exportValue(value)}</strong><small>${detail}</small></article>`).join("");
+}
+
+function exportRankPanel(title, rows, options = {}) {
+  if (!rows || !rows.length) return `<section class="export-panel"><h3>${title}</h3><p>Non disponible dans les donnees filtrees.</p></section>`;
+  const max = Math.max(1, ...rows.map((row) => row.value || 0));
+  const total = rows.reduce((sum, row) => sum + (row.value || 0), 0) || 1;
+  const tone = options.tone || "orange";
+  return `<section class="export-panel export-bars ${options.className || ""}"><h3>${title}</h3>${rows.slice(0, options.limit || 6).map((row) => `<div class="export-rank ${tone}"><span>${row.label}</span><b>${row.value} <small>${pctOf(row.value, total)}</small></b><i style="width:${((row.value || 0) / max) * 100}%"></i></div>`).join("")}</section>`;
+}
+
+function exportDonutPanel(title, rows, options = {}) {
+  if (!rows || !rows.length) return `<section class="export-panel"><h3>${title}</h3><p>Non disponible dans les donnees filtrees.</p></section>`;
+  const total = rows.reduce((sum, row) => sum + (row.value || 0), 0) || 1;
+  let progress = 0;
+  const colors = options.colors || ["#2563EB", "#E85D2A", "#14804A", "#D4A017", "#0EA5A5"];
+  const stops = rows.map((row, index) => { const start = progress; progress += ((row.value || 0) / total) * 100; return `${colors[index % colors.length]} ${start}% ${progress}%`; }).join(", ");
+  const labelText = (label) => {
+    if (!options.genderIcons) return label;
+    const normalized = normalizeForMatch(label);
+    if (normalized.includes("homme")) return `👨 ${label}`;
+    if (normalized.includes("femme")) return `👩 ${label}`;
+    return label;
+  };
+  return `<section class="export-panel export-donut ${options.className || ""}"><h3>${title}</h3><div class="export-donut-body"><div class="export-donut-ring" style="background:conic-gradient(${stops})"><strong>${total}</strong><small>Total</small></div><div class="export-donut-labels">${rows.slice(0, options.limit || 5).map((row, index) => `<div><i style="background:${colors[index % colors.length]}"></i><span>${labelText(row.label)}</span><b>${row.value}</b></div>`).join("")}</div></div></section>`;
+}
+
+function exportMovementsPanel(rows) {
+  if (!rows || !rows.length) return `<section class="export-panel export-movement"><h3>Mouvements cumules</h3><p>Non disponible dans les donnees filtrees.</p></section>`;
+  const series = [{ key: "recrutement", label: "Recrutements", color: "#14804A" }, { key: "depart", label: "Departs", color: "#C53030" }, { key: "demission", label: "Demissions", color: "#D4A017" }, { key: "retraite", label: "Retraites", color: "#E85D2A" }, { key: "licenciement", label: "Licenciements", color: "#7C3AED" }];
+  const max = Math.max(1, ...rows.flatMap((row) => series.map((item) => row[item.key] || 0)));
+  const width = 1120, height = 260, left = 38, right = 18, top = 18, bottom = 34;
+  const x = (index) => left + (rows.length > 1 ? index * ((width - left - right) / (rows.length - 1)) : 0);
+  const y = (value) => top + (height - top - bottom) * (1 - (value / max));
+  const grid = [0, .5, 1].map((factor) => `<line x1="${left}" x2="${width - right}" y1="${y(max * factor)}" y2="${y(max * factor)}" stroke="#E8EDF2"/><text x="${left - 8}" y="${y(max * factor) + 4}" text-anchor="end" font-size="10" fill="#7A838E">${Math.round(max * factor)}</text>`).join("");
+  const paths = series.map((item, seriesIndex) => `<polyline points="${rows.map((row, index) => `${x(index)},${y(row[item.key] || 0)}`).join(" ")}" fill="none" stroke="${item.color}" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>${rows.map((row, index) => {
+    const value = row[item.key] || 0;
+    const labelOffset = seriesIndex % 2 === 0 ? -9 : 16;
+    return `<circle cx="${x(index)}" cy="${y(value)}" r="4.4" fill="#FFFFFF" stroke="${item.color}" stroke-width="2.4"/><text x="${x(index)}" y="${y(value) + labelOffset}" text-anchor="middle" font-size="14" font-weight="900" fill="${item.color}">${value}</text>`;
+  }).join("")}`).join("");
+  const labels = rows.map((row, index) => `<text x="${x(index)}" y="${height - 8}" text-anchor="middle" font-size="12" font-weight="800" fill="#24445C">${row.label}</text>`).join("");
+  return `<section class="export-panel export-movement"><div class="export-panel-head"><h3>Evolution des mouvements</h3><div class="export-legend">${series.map((item) => `<span><i style="background:${item.color}"></i>${item.label}</span>`).join("")}</div></div><svg class="export-line-chart" viewBox="0 0 ${width} ${height}" aria-label="Evolution des mouvements">${grid}${paths}${labels}</svg></section>`;
+}
+
+function exportPyramidPanel(title, rows, className = "") {
+  if (!rows || !rows.length) return `<section class="export-panel"><h3>${title}</h3><p>Non disponible dans les donnees filtrees.</p></section>`;
+  const max = Math.max(1, ...rows.map((row) => Math.max(row[1] || 0, row[2] || 0)));
+  return `<section class="export-panel export-pyramid ${className}"><h3>${title}</h3><div class="export-pyramid-legend"><span><i class="men"></i>Hommes</span><span><i class="women"></i>Femmes</span></div>${rows.map(([label, men, women]) => `<div class="export-pyramid-row"><b>${men || 0}</b><i class="men" style="width:${((men || 0) / max) * 100}%"></i><span>${label}</span><i class="women" style="width:${((women || 0) / max) * 100}%"></i><b>${women || 0}</b></div>`).join("")}</section>`;
+}
+
+function exportFactsPanel(dataset) {
+  if (!dataset) return `<section class="export-panel"><h3>Indicateurs complémentaires</h3><p>Aucune donnée chargée.</p></section>`;
+  const s = dataset.summary;
+  const facts = [["Anciennete moyenne", exportYears(s.seniorityAverage), "population active"], ["Heures supplementaires", s.hs?.total, s.hs ? "valeur cumulee" : "non disponible"], ["Conges", s.conges?.total, s.conges ? "jours cumules" : "non disponible"], ["Effectif E.E", s.effectifEntreprise?.total, s.effectifEntreprise ? "entreprise" : "non disponible"]];
+  return `<section class="export-panel export-facts"><h3>Indicateurs complementaires</h3>${facts.map(([label, value, detail]) => `<div><span>${label}</span><strong>${exportValue(value)}</strong><small>${detail}</small></div>`).join("")}</section>`;
+}
+
+function buildDashboardExportMarkup(dataset) {
+  const d = dataset?.distributions || {};
+  return `<div class="export-shell">
+    <div class="export-title">
+      <div class="export-brand"><img src="/static/assets/sonasid-logo.png" alt="SONASID" /><div><small>SONASID NADOR / RH INTELLIGENCE</small><h1>Tableau de bord RH</h1><span>${dataset ? `${dataset.site} - ${currentExportPeriod(dataset)}` : "Aucun dataset charge"}</span></div></div>
+      <div class="export-date"><span>Generation</span><strong>${new Date().toLocaleDateString("fr-FR")}</strong><small>${activeExportFiltersLabel()}</small></div>
+    </div>
+    <div class="export-kpis">${exportKpiCards(dataset)}</div>
+    <div class="export-layout">
+      ${exportMovementsPanel(d.movementsCumulative)}
+      ${exportDonutPanel("Repartition du personnel", d.college, { className: "export-panel-accent" })}
+      ${exportRankPanel("Etat des departs", d.departureReasons, { tone: "red" })}
+      ${exportPyramidPanel("Age et genre", d.ageByGender, "export-age-gender")}
+      ${exportRankPanel("Types de contrats", d.contrats, { tone: "green" })}
+      ${exportDonutPanel("Genre", d.genre, { className: "export-gender", colors: ["#2563EB", "#E85D2A"], genderIcons: true })}
+      ${exportFactsPanel(dataset)}
+    </div>
+    <div class="export-footer"><span>Source : ${dataset ? dataset.sourceFile : "Aucune donnee"}</span><span>Donnees issues du dashboard filtre</span></div>
+  </div>`;
+}
+
+function styleExportSheet(sheet, range) {
+  const border = { style: "thin", color: { rgb: "D9E1E8" } };
+  for (let row = range.s.r; row <= range.e.r; row += 1) for (let col = range.s.c; col <= range.e.c; col += 1) {
+    const cell = sheet[XLSX.utils.encode_cell({ r: row, c: col })];
+    if (cell) cell.s = { ...(cell.s || {}), alignment: { vertical: "center", wrapText: true }, border };
+  }
+}
+
 function exportDashboardXlsx() {
   if (typeof XLSX === "undefined") { toast("La librairie Excel n'est pas chargée."); return; }
-  const summary = realDataset?.summary || {};
-  const rows = [["Indicateur", "Valeur"],
-    ["Effectif actif", summary.effectifActif ?? "N/A"],
-    ["Effectif total", summary.effectifTotal ?? "N/A"],
-    ["Turnover", summary.turnover ?? "N/A"],
-    ["Licenciements", summary.licenciements ?? "N/A"],
-    ["Départs", summary.departures ?? "N/A"],
-    ["Recrutements", summary.recruitments ?? "N/A"],
-    [], ["Mouvements cumulés"], ["Période", "Départs", "Recrutements", "Démissions", "Retraites", "Licenciements"],
-    ...(realDataset?.distributions?.movementsCumulative || []).map((item) => [item.label, item.depart || 0, item.recrutement || 0, item.demission || 0, item.retraite || 0, item.licenciement || 0])];
-  const sheet = XLSX.utils.aoa_to_sheet(rows);
-  sheet["!cols"] = [{ wch: 28 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 16 }];
+  if (!realDataset) { toast("Importez un fichier Excel avant l'export."); return; }
+  const s = realDataset.summary;
+  const reasons = realDataset.distributions.departureReasons || [];
+  const dismissals = reasons.find((row) => normalizeForMatch(row.label).includes("licenci"))?.value ?? 0;
+  const dashboardRows = [
+    ["SONASID NADOR / RH INTELLIGENCE", "", "", "", "", ""],
+    ["TABLEAU DE BORD RH", currentExportPeriod(realDataset), "Generation", new Date().toLocaleDateString("fr-FR"), "Filtres", activeExportFiltersLabel()],
+    [],
+    ["KPI", "VALEUR", "DETAIL", "KPI", "VALEUR", "DETAIL"],
+    ["Effectif actif", s.effectifActif, `sur ${s.effectifTotal} salaries`, "Turnover", s.turnover, `${s.departures} departs`],
+    ["Licenciements", dismissals, "departs enregistres", "Recrutements", s.recruitments, "sur la periode"],
+    ["Age moyen", exportYears(s.ageAverage), "population active", "Anciennete moyenne", exportYears(s.seniorityAverage), "population active"],
+    [],
+    ["REPARTITION DU PERSONNEL", "NOMBRE", "POURCENTAGE", "TYPES DE CONTRATS", "NOMBRE", "POURCENTAGE"],
+  ];
+  const left = realDataset.distributions.college || [];
+  const right = realDataset.distributions.contrats || [];
+  const splitMax = Math.max(left.length, right.length);
+  for (let i = 0; i < splitMax; i += 1) {
+    dashboardRows.push([left[i]?.label || "", left[i]?.value ?? "", left[i] ? pctOf(left[i].value, s.effectifActif) : "", right[i]?.label || "", right[i]?.value ?? "", right[i] ? pctOf(right[i].value, s.effectifActif) : ""]);
+  }
+  dashboardRows.push([], ["ETAT DES DEPARTS", "NOMBRE", "POURCENTAGE", "GENRE", "NOMBRE", "POURCENTAGE"]);
+  const genre = realDataset.distributions.genre || [];
+  const depMax = Math.max(reasons.length, genre.length);
+  for (let i = 0; i < depMax; i += 1) {
+    dashboardRows.push([reasons[i]?.label || "", reasons[i]?.value ?? "", reasons[i] ? pctOf(reasons[i].value, s.departures || 1) : "", genre[i]?.label || "", genre[i]?.value ?? "", genre[i] ? pctOf(genre[i].value, s.effectifActif) : ""]);
+  }
+  dashboardRows.push([], ["MOUVEMENTS CUMULES", "DEPARTS", "RECRUTEMENTS", "DEMISSIONS", "RETRAITES", "LICENCIEMENTS"], ...(realDataset.distributions.movementsCumulative || []).map((item) => [item.label, item.depart || 0, item.recrutement || 0, item.demission || 0, item.retraite || 0, item.licenciement || 0]));
+  const rows = dashboardRows;
+  const dashboard = XLSX.utils.aoa_to_sheet(rows);
+  dashboard["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: 5 } }];
+  dashboard["!cols"] = [{ wch: 30 }, { wch: 18 }, { wch: 24 }, { wch: 17 }, { wch: 15 }, { wch: 18 }];
+  dashboard["!pageSetup"] = { orientation: "landscape", fitToWidth: 1, fitToHeight: 1, paperSize: 9 };
+  dashboard["!margins"] = { left: 0.25, right: 0.25, top: 0.4, bottom: 0.4, header: 0.1, footer: 0.1 };
+  dashboard["!autofilter"] = { ref: `A4:F${rows.length}` };
+  styleExportSheet(dashboard, XLSX.utils.decode_range(dashboard["!ref"]));
+  dashboard.A1.s = { font: { bold: true, color: { rgb: "FFFFFF" }, sz: 18 }, fill: { fgColor: { rgb: "E85D2A" } }, alignment: { horizontal: "left" } };
+  dashboard.A4.s = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "24445C" } } };
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, sheet, "Dashboard");
-  XLSX.writeFile(workbook, `dashboard_rh_${new Date().toISOString().slice(0, 10)}.xlsx`);
-  toast("Dashboard exporté au format XLSX.", "success");
+  XLSX.utils.book_append_sheet(workbook, dashboard, "Dashboard");
+  const detailRows = rawImportRows ? getFilteredDashboardRows() : getFilteredEmployeeRows();
+  if (detailRows.length) {
+    const detail = XLSX.utils.json_to_sheet(detailRows);
+    detail["!cols"] = Object.keys(detailRows[0] || {}).map(() => ({ wch: 18 }));
+    if (detail["!ref"]) detail["!autofilter"] = { ref: detail["!ref"] };
+    XLSX.utils.book_append_sheet(workbook, detail, "Donnees filtrees");
+  }
+  XLSX.writeFile(workbook, `dashboard_rh_${new Date().toISOString().slice(0, 10)}.xlsx`, { cellStyles: true });
+  toast("Dashboard XLSX professionnel exporté.", "success");
 }
 
 async function exportDashboardPng() {
   if (typeof html2canvas === "undefined") { toast("Le module d'export PNG n'est pas chargé."); return; }
-  const summary = realDataset?.summary || {};
-  const movements = realDataset?.distributions?.movementsCumulative || [];
   const exportHost = document.createElement("div");
   exportHost.className = "dashboard-png-export";
-  exportHost.innerHTML = `<div class="export-title"><div><small>SONASID NADOR / RH INTELLIGENCE</small><h1>Tableau de bord RH</h1></div><strong>${new Date().toLocaleDateString("fr-FR")}</strong></div>
-    <div class="export-kpis">
-      <article><span>Effectif actif</span><strong>${summary.effectifActif ?? 0}</strong><small>sur ${summary.effectifTotal ?? 0} salariés</small></article>
-      <article><span>Turnover</span><strong>${summary.turnover ?? "0%"}</strong><small>${summary.departures ?? 0} départs</small></article>
-      <article><span>Licenciements</span><strong>${summary.licenciements ?? 0}</strong><small>départs enregistrés</small></article>
-      <article><span>Recrutements</span><strong>${summary.recruitments ?? 0}</strong><small>sur la période</small></article>
-      <article><span>Âge moyen</span><strong>${summary.ageAverage ?? 0} ans</strong><small>population active</small></article>
-    </div>
-    <div class="export-chart">${renderMovementsChart("Mouvements du personnel", movements).replace(/<section class="panel wide movements-panel">|<\/section>/g, "")}</div>
-    <div class="export-footer"><span>Source : ${realDataset?.sourceFile || "Dataset RH importé"}</span><span>Export généré depuis le dashboard RH</span></div>`;
-  Object.assign(exportHost.style, { position: "fixed", left: "-10000px", top: "0", width: "1600px", background: "#F4F6F8", zIndex: "-1" });
+  exportHost.innerHTML = buildDashboardExportMarkup(realDataset);
+  Object.assign(exportHost.style, { position: "absolute", left: "-9999px", top: "0", display: "block", width: "1920px", height: "1080px", overflow: "hidden", background: "#F4F6F8", zIndex: "1" });
   document.body.appendChild(exportHost);
   try {
-    const source = await html2canvas(exportHost, { backgroundColor: "#F4F6F8", scale: 1, useCORS: true });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const source = await html2canvas(exportHost, { backgroundColor: "#F4F6F8", width: 1920, height: 1080, scale: 1, useCORS: true, logging: false });
     const link = document.createElement("a");
     link.download = `dashboard_rh_${new Date().toISOString().slice(0, 10)}.png`;
     link.href = source.toDataURL("image/png");
     link.click();
-    toast("Dashboard exporté au format PNG paysage.", "success");
-  } catch {
-    toast("Impossible de générer l'image PNG du dashboard.");
-  } finally {
-    exportHost.remove();
-  }
+    toast("Dashboard PNG professionnel exporté en une page.", "success");
+  } catch { toast("Impossible de générer l'image PNG du dashboard."); } finally { exportHost.remove(); }
 }
 
 function simplePage(id, title, rows) { byId(id).innerHTML = `<section class="panel"><h2>${title}</h2><div class="activity-list">${rows.map((x) => `<div><span></span>${x}</div>`).join("")}</div></section>`; }
@@ -1957,6 +2679,9 @@ async function performLogin(username, password) {
     localStorage.setItem("sonasid_rh_token", JSON.stringify({ token: data.access_token, user: data.username, role: data.role, displayName: session.displayName }));
     document.body.classList.add("is-authenticated");
     applyRolePermissions();
+    await loadRealDataset();
+    renderAll();
+    applyRolePermissions();
     toast(`Connecté comme ${session.displayName}`, "success");
   } catch (error) {
     errorEl.textContent = error.message || "Connexion impossible. Vérifiez le service RH backend.";
@@ -2049,6 +2774,8 @@ document.addEventListener("input", (e) => {
 document.addEventListener("change", (e) => {
   if (e.target.matches("#cvFileInput")) { importSelectedCv(e.target.files); e.target.value = ""; }
   if (e.target.matches("#importExcelInput")) { importAnnualExcel(e.target.files?.[0]); e.target.value = ""; }
+  if (e.target.matches("#importHsInput")) { importOvertimeExcel(e.target.files?.[0]); e.target.value = ""; }
+  if (e.target.matches("#importCrInput")) { importLeaveExcel(e.target.files?.[0]); e.target.value = ""; }
   if (e.target.matches('[data-action="job-status-filter"]')) { appState.jobFilter = e.target.value; rerenderKeepView(); setView("jobs"); }
   if (e.target.matches('[data-action="candidate-status-filter"]')) { appState.candidateStatusFilter = e.target.value; rerenderKeepView(); setView("candidates"); }
   if (e.target.matches('[data-action="candidate-offer-filter"]')) { appState.candidateOfferFilter = e.target.value; rerenderKeepView(); setView("candidates"); }
@@ -2100,6 +2827,8 @@ document.addEventListener("click", (e) => {
     actionEl.remove();
   }
   if (action === "import-excel-trigger") byId("importExcelInput")?.click();
+  if (action === "import-hs-trigger") byId("importHsInput")?.click();
+  if (action === "import-cr-trigger") byId("importCrInput")?.click();
   if (action === "export-jobs-excel") exportJobsToExcel();
   if (action === "save-interview-feedback") saveInterviewFeedback(actionEl.dataset.id);
   if (action === "select-cv-files") byId("cvFileInput")?.click();
@@ -2138,17 +2867,7 @@ document.addEventListener("click", (e) => {
 });
 
 
+restoreSession();
 renderAll();
 loadRealDataset().then(() => { renderAll(); applyRolePermissions(); });
 applyRolePermissions();
-restoreSession();
-
-
-
-
-
-
-
-
-
-

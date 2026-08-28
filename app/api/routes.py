@@ -1,5 +1,8 @@
 from pathlib import Path
 
+from datetime import datetime
+from typing import Any
+
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse
 
@@ -18,6 +21,16 @@ from app.services.chatbot_service import chatbot_service
 from app.services.vector_store_service import vector_store_service
 
 router = APIRouter()
+
+
+def _serialize_mongo(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_serialize_mongo(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _serialize_mongo(item) for key, item in value.items() if key != "_id"}
+    return value
 
 
 @router.post("/auth/login", response_model=LoginResponse)
@@ -130,6 +143,36 @@ async def dashboard(_: str = Depends(require_read_role)) -> str:
     </body>
     </html>
     """
+
+
+@router.get("/employees")
+async def list_employees(
+    search: str | None = None,
+    department: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=500, ge=1, le=2000),
+    _: str = Depends(require_read_role),
+) -> list[dict]:
+    db = get_database()
+    query: dict[str, Any] = {"deleted_at": {"$exists": False}}
+    clauses: list[dict[str, Any]] = []
+    if search:
+        escaped = search.strip()
+        clauses.append({"$or": [
+            {"matricule": {"$regex": escaped, "$options": "i"}},
+            {"nom_complet": {"$regex": escaped, "$options": "i"}},
+            {"nom": {"$regex": escaped, "$options": "i"}},
+            {"prenom": {"$regex": escaped, "$options": "i"}},
+            {"email": {"$regex": escaped, "$options": "i"}},
+        ]})
+    if department:
+        clauses.append({"$or": [{"departement": department}, {"department": department}, {"service": department}]})
+    if status:
+        clauses.append({"$or": [{"statut": status}, {"status": status}]})
+    if clauses:
+        query["$and"] = clauses
+    employees = await db[EMPLOYES].find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(length=limit)
+    return [_serialize_mongo(employee) for employee in employees]
 
 
 @router.post("/chatbot/message", response_model=ChatResponse)

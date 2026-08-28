@@ -1,4 +1,4 @@
-EMPLOYES = "employes"
+EMPLOYES = "employees"
 CANDIDATS = "candidats"
 CV_DOCUMENTS = "cv_documents"
 POSTES = "postes"
